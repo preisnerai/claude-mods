@@ -21,3 +21,5 @@ jobs:
       - run: claude plugin validate .
       - run: claude plugin validate model-router
       - run: claude plugin test model-router
+      - run: claude plugin validate find-mod
+      - run: claude plugin test find-mod
