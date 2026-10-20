@@ -7,6 +7,11 @@
       "name": "model-router",
       "source": "./model-router",
       "description": "Cache-aware model routing, rtk-style output compression and terse answers. Shows the dollars saved."
+    },
+    {
+      "name": "find-mod",
+      "source": "./find-mod",
+      "description": "Wyszukiwarka modów do Claude Code na GitHubie: z opisu albo z kontekstu sesji."
     }
   ]
 }

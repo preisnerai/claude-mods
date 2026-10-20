@@ -162,6 +162,12 @@ Model ids per tier are at the top of [`model-router/hooks/register.ts`](model-ro
 
 **What about privacy?** Routing and compression run inside Claude Code. The only requests the mod makes are the Haiku judge on your own account (for unclear prompts, unless `judge: off`) and laya-serve if you set it up. It also runs `rtk` locally when installed, and keeps the last 200 full Bash outputs under `~/.claude/model-router/tee/`.
 
+## More mods in this repo
+
+**[find-mod](find-mod)** (0.1, early): finds Claude Code mods on GitHub. `/find-mod what you need` searches the `claude-mod`, `claude-code-mod` and `claude-code-plugin` topics, has Haiku rate each match, and picks the best match with the most stars. `/find-mod install owner/repo` previews first and installs only with `--yes`. Install it with `/plugin install find-mod --marketplace preisnerai/claude-mods`. Details in [Polish](README.pl.md#find-mod).
+
+To make your own mod findable: add the `claude-mod` topic and a `.claude-plugin/marketplace.json` to its repository.
+
 ## Credits
 
 - [laya-router](https://github.com/marcreichel/laya-router) by Marc Reichel (MIT): the idea of routing on a classifier and the cost of switching mid-session, `/model` taking precedence, stuck detection, the calibration log, and the laya-serve tier descriptions this mod reuses.
