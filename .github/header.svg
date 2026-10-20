@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="300" viewBox="0 0 1280 300" role="img" aria-label="model-router: every prompt on the cheapest Claude model that can do it, with the cache math done">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14121f"/>
+      <stop offset="1" stop-color="#1f1a2e"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8a84a3"/>
+    </marker>
+  </defs>
+  <rect width="1280" height="300" rx="18" fill="url(#bg)"/>
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="64" y="118" font-size="64" font-weight="700" fill="#f4f1ff">model-router</text>
+    <text x="66" y="164" font-size="23" fill="#c9c3df">Every prompt on the cheapest Claude model that can do it,</text>
+    <text x="66" y="194" font-size="23" fill="#c9c3df">with the prompt-cache math done before each switch.</text>
+    <text x="66" y="248" font-size="18" fill="#8a84a3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">route · compress · speak less  ·  zero dependencies</text>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18">
+    <rect x="806" y="128" width="112" height="44" rx="10" fill="#2b2540" stroke="#4b4366"/>
+    <text x="862" y="156" text-anchor="middle" fill="#e6e1f7">prompt</text>
+    <path d="M918 150 C 960 150, 960 72, 1004 72" fill="none" stroke="#8a84a3" stroke-width="2" marker-end="url(#arrow)"/>
+    <path d="M918 150 L 1004 150" fill="none" stroke="#8a84a3" stroke-width="2" marker-end="url(#arrow)"/>
+    <path d="M918 150 C 960 150, 960 228, 1004 228" fill="none" stroke="#8a84a3" stroke-width="2" marker-end="url(#arrow)"/>
+    <rect x="1008" y="50" width="196" height="44" rx="22" fill="#1d3b2f" stroke="#3fb37f"/>
+    <text x="1106" y="78" text-anchor="middle" fill="#9be7c4">Haiku  $0.10</text>
+    <rect x="1008" y="128" width="196" height="44" rx="22" fill="#1f2f45" stroke="#4f8fe0"/>
+    <text x="1106" y="156" text-anchor="middle" fill="#a9cbf5">Sonnet $2</text>
+    <rect x="1008" y="206" width="196" height="44" rx="22" fill="#3a2440" stroke="#c46ad6"/>
+    <text x="1106" y="234" text-anchor="middle" fill="#ecb5f5">Opus   $4</text>
+  </g>
+</svg>

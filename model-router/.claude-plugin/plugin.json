@@ -1,5 +1,106 @@
 {
   "name": "model-router",
-  "version": "0.1.0",
-  "description": "Routes each prompt to Haiku, Sonnet or Opus by how much capability it needs, so simple tasks stop spending Opus tokens."
+  "version": "1.0.0",
+  "description": "Cache-aware model routing for Claude Code: each prompt goes to Haiku, Sonnet or Opus by what it needs and what switching costs, Bash output is compressed rtk-style, and answers drop the filler. Shows the dollars saved.",
+  "author": { "name": "preisnerai" },
+  "homepage": "https://github.com/preisnerai/claude-mods/tree/main/model-router",
+  "repository": "https://github.com/preisnerai/claude-mods",
+  "license": "MIT",
+  "keywords": ["model-routing", "token-saving", "cost", "haiku", "sonnet", "opus", "prompt-cache", "rtk", "adhd"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "escalate": {
+      "type": "string",
+      "title": "Harder tasks",
+      "description": "auto moves a session to a stronger model when a prompt needs it (or tools keep failing); suggest only names it in the status line.",
+      "options": ["auto", "suggest"],
+      "default": "auto"
+    },
+    "style": {
+      "type": "string",
+      "title": "Answer style",
+      "description": "terse cuts preamble, recaps and closers; adhd also leads with the next action and numbers steps (after i-have-adhd); off leaves answers alone.",
+      "options": ["terse", "adhd", "off"],
+      "default": "terse"
+    },
+    "compress": {
+      "type": "boolean",
+      "title": "Compress Bash output",
+      "description": "Strips progress bars and passing tests, folds repeats, keeps every error; the last 200 full outputs stay in ~/.claude/model-router/tee.",
+      "default": true
+    },
+    "useRtk": {
+      "type": "boolean",
+      "title": "Use rtk when installed",
+      "description": "Hands output of commands rtk knows (cargo test, pytest, tsc, vitest, grep, find, ...) to `rtk pipe` when the rtk binary is on PATH.",
+      "default": true
+    },
+    "cacheTtl": {
+      "type": "string",
+      "title": "Prompt cache lifetime",
+      "description": "1h: Claude Code's default (writes cost 2x input, entries live an hour). 5m: for setups that write 5-minute entries (1.25x). The router's switch math uses it.",
+      "options": ["1h", "5m"],
+      "default": "1h"
+    },
+    "judge": {
+      "type": "string",
+      "title": "Judge for unclear prompts",
+      "description": "haiku asks claude-haiku-5-5 (a fraction of a cent) when the local rules can't tell; off routes on the rules alone and keeps the current model otherwise.",
+      "options": ["haiku", "off"],
+      "default": "haiku"
+    },
+    "enableFable": {
+      "type": "boolean",
+      "title": "Route research to Fable",
+      "description": "Lets proofs, new theories and bounds go to claude-fable-5-1. Turn on only if your plan includes Fable.",
+      "default": false
+    },
+    "showNote": {
+      "type": "boolean",
+      "title": "Note beneath answers",
+      "description": "A line under each answer naming the model and why, for surfaces with no status line.",
+      "default": true
+    },
+    "layaUrl": {
+      "type": "string",
+      "title": "laya-serve URL (optional)",
+      "description": "A running laya-serve (e.g. http://localhost:8000) classifies unclear prompts on your machine for zero tokens, before the Haiku judge.",
+      "default": ""
+    },
+    "layaApiKey": {
+      "type": "string",
+      "title": "laya-serve API key",
+      "description": "Sent as a Bearer token; leave empty when laya-serve runs without LAYA_API_KEY.",
+      "sensitive": true,
+      "default": ""
+    },
+    "haikuEffort": {
+      "type": "string",
+      "title": "Haiku effort",
+      "description": "Effort for turns routed to Haiku.",
+      "options": ["low", "medium", "high", "xhigh", "max"],
+      "default": "low"
+    },
+    "sonnetEffort": {
+      "type": "string",
+      "title": "Sonnet effort",
+      "description": "Effort for turns routed to Sonnet.",
+      "options": ["low", "medium", "high", "xhigh", "max"],
+      "default": "medium"
+    },
+    "opusEffort": {
+      "type": "string",
+      "title": "Opus effort",
+      "description": "Effort for turns routed to Opus.",
+      "options": ["low", "medium", "high", "xhigh", "max"],
+      "default": "high"
+    },
+    "fableEffort": {
+      "type": "string",
+      "title": "Fable effort",
+      "description": "Effort for turns routed to Fable.",
+      "options": ["low", "medium", "high", "xhigh", "max"],
+      "default": "xhigh"
+    }
+  }
 }

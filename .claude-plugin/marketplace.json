@@ -1,0 +1,12 @@
+{
+  "name": "claude-mods",
+  "owner": { "name": "preisnerai" },
+  "description": "Mods for Claude Code that spend fewer tokens.",
+  "plugins": [
+    {
+      "name": "model-router",
+      "source": "./model-router",
+      "description": "Cache-aware model routing, rtk-style output compression and terse answers. Shows the dollars saved."
+    }
+  ]
+}
