@@ -1,7 +1,7 @@
 {
   "name": "model-router",
-  "version": "1.1.0",
-  "description": "Cache-aware model routing for Claude Code: each prompt goes to Haiku, Sonnet or Opus by what it needs and what switching costs, Bash output is compressed rtk-style, and answers drop the filler. Shows the dollars saved.",
+  "version": "1.2.0",
+  "description": "Cache-aware model routing for Claude Code: each prompt goes to Haiku, Sonnet or Opus by what it needs, and a cheaper model only when that pays after the prompt-cache re-write. Crew mode adds warm per-model workers. Bash output is compressed rtk-style and answers drop the filler.",
   "author": {
     "name": "preisnerai"
   },
@@ -24,7 +24,7 @@
     "mode": {
       "type": "string",
       "title": "Mode",
-      "description": "route switches the main session's model when the cache math says it pays. crew keeps the main session on one orchestrator model (its cache never resets) and hands work to long-lived Haiku, Sonnet and Opus workers, each with its own warm cache.",
+      "description": "route moves the main session to another model when a prompt needs it and the cache math says it pays. crew keeps the main session on one orchestrator model from the first prompt on (its cache is never thrown away) and hands work of several tool calls to long-lived Haiku, Sonnet and Opus workers, each with its own warm cache.",
       "options": [
         "route",
         "crew"
@@ -66,13 +66,13 @@
     "compress": {
       "type": "boolean",
       "title": "Compress Bash output",
-      "description": "Strips progress bars and passing tests, folds repeats, keeps every error; the last 200 full outputs stay in ~/.claude/model-router/tee.",
+      "description": "Strips progress bars and passing tests, folds exact repeats, keeps every error line; file contents, diffs and data pass untouched. The last 200 compressed outputs stay whole in ~/.claude/model-router/tee.",
       "default": true
     },
     "useRtk": {
       "type": "boolean",
       "title": "Use rtk when installed",
-      "description": "Hands output of commands rtk knows (cargo test, pytest, tsc, vitest, grep, find, ...) to `rtk pipe` when the rtk binary is on PATH.",
+      "description": "Hands plain cargo test, pytest, tsc, mypy and go build output to `rtk pipe` when the rtk binary is on PATH; a summary that drops the failures is refused.",
       "default": true
     },
     "cacheTtl": {
@@ -88,7 +88,7 @@
     "judge": {
       "type": "string",
       "title": "Judge for unclear prompts",
-      "description": "haiku asks claude-haiku-5-5 (a fraction of a cent) when the local rules can't tell; off routes on the rules alone and keeps the current model otherwise.",
+      "description": "haiku asks claude-haiku-5-5 (about $0.0001) when the local rules can't tell. off: no judge; unclear prompts go to laya-serve when layaUrl is set, and otherwise keep the current model.",
       "options": [
         "haiku",
         "off"
@@ -123,7 +123,7 @@
     "haikuEffort": {
       "type": "string",
       "title": "Haiku effort",
-      "description": "Effort for turns routed to Haiku.",
+      "description": "Effort when the router moves you to Haiku (on your own model your /effort stays, so its cache stays too).",
       "options": [
         "low",
         "medium",
@@ -136,7 +136,7 @@
     "sonnetEffort": {
       "type": "string",
       "title": "Sonnet effort",
-      "description": "Effort for turns routed to Sonnet.",
+      "description": "Effort when the router moves you to Sonnet (on your own model your /effort stays, so its cache stays too).",
       "options": [
         "low",
         "medium",
@@ -149,7 +149,7 @@
     "opusEffort": {
       "type": "string",
       "title": "Opus effort",
-      "description": "Effort for turns routed to Opus.",
+      "description": "Effort when the router moves you to Opus (on your own model your /effort stays, so its cache stays too).",
       "options": [
         "low",
         "medium",
@@ -162,7 +162,7 @@
     "fableEffort": {
       "type": "string",
       "title": "Fable effort",
-      "description": "Effort for turns routed to Fable.",
+      "description": "Effort when the router moves you to Fable (on your own model your /effort stays, so its cache stays too).",
       "options": [
         "low",
         "medium",

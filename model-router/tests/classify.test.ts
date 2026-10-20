@@ -26,6 +26,15 @@ const CASES: [string, string | undefined][] = [
   ['Zbadaj wyciek pamięci w workerze kolejki', 'opus'],
   ['Memory grows by 50 MB per hour in production, find the memory leak', 'opus'],
 
+  // A question about a failure is a diagnosis; choosing a design is architecture; "translate" said of code is a port.
+  ['What is causing the 500 errors on checkout?', 'opus'],
+  ['Co powoduje błąd 500 przy płatności?', 'opus'],
+  ["What's wrong with the auth flow? It fails for SSO users", 'opus'],
+  ['Which of these two designs scales better?', 'opus'],
+  ['Translate the error handling module from Python to Go', 'sonnet'],
+  ['What is the default port for Redis?', 'haiku'],
+  ['Rename the payment service and update every caller across the monorepo', undefined],
+
   ['Help me with my thing.', undefined],
   ['Can you take a look?', undefined],
 ]
@@ -54,6 +63,10 @@ test('short replies are follow-ups', async () => {
     expect({ text, follow: isFollowUp(text) }).toEqual({ text, follow: true })
   }
   expect(isFollowUp('Now add pagination to the users endpoint and tests for it')).toBe(false)
+  // Short, but the rules read them: new tasks, not follow-ups.
+  for (const text of ['debug flaky test', 'rename foo bar', 'zrób audyt bezpieczeństwa', 'translate this']) {
+    expect({ text, follow: isFollowUp(text) }).toEqual({ text, follow: false })
+  }
 })
 
 test('the judge answers one word, Fable folded into Opus when off', async () => {

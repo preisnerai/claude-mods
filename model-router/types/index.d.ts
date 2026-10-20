@@ -1,5 +1,8 @@
 export type Tier = 'haiku' | 'sonnet' | 'opus' | 'fable'
 
+/** `Tier` under a name the engine's own module does not use (inside `declare module 'claude-code'`, `Tier` is the engine's). */
+export type ModelTier = Tier
+
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 /** How a tier was chosen: a local rule, the judge model, laya-serve, a `!tier` prefix, a short follow-up. */
@@ -24,11 +27,11 @@ export type Warm = Record<string, { tokens: number; at: number }>
 export type Ledger = {
   /** Main-loop turns per tier. */
   turns: Record<Tier, number>
-  /** Steps the router moved off the model they would have run on. */
+  /** Requests the router sent to another model than the session's own (crew workers included). */
   routedSteps: number
-  /** What those steps cost on the routed model. */
+  /** What the session's requests cost. */
   actualUsd: number
-  /** What the same steps would have cost on the model they would have run on. */
+  /** What the same requests would have cost on the session's own model, with that model's own cache. */
   baselineUsd: number
   /** Re-routes the cost model allowed, and the ones it refused because the cache was worth more. */
   switches: number
@@ -41,6 +44,12 @@ export type Ledger = {
   keptChars: number
 }
 
+/** What a request was sent with. */
+export type Sent = { model: string; effort: string | number | null }
+
+/** A prompt typed while a turn ran, routed when its own turn starts. */
+export type Queued = { text: string; tier: Tier | null }
+
 declare module 'claude-code' {
   interface PluginState {
     'model-router': {
@@ -48,13 +57,24 @@ declare module 'claude-code' {
       /** The session's /model when routing began; a different one later means the person took over. */
       sessionModel: string | null
       isManual: boolean
-      /** A typed skill command waiting for its expanded text before it is routed. */
-      pending: string | null
-      /** Input tokens the last main-loop request carried. */
+      /** Prompts typed during a running turn, routed when their turn starts. */
+      queued: Queued[]
+      /** Input tokens the last main-loop request carried, plus its answer. */
       context: number
+      /** Input tokens of the session's first request: the system prompt and tools, cached for every conversation. */
+      prefix: number
       warm: Warm
-      /** Main-loop steps of the turn in progress. */
+      /** What the last main-loop request was sent with, and the session's own effort before any rewrite. */
+      lastSent: Sent | null
+      baseEffort: string | number | null
+      /** The session model's cache as if every request had gone there: the baseline the savings are measured against. */
+      shadow: { tokens: number; at: number } | null
+      /** The task tier of the turn in progress, which its finished shape is learned into. */
+      taskTier: ModelTier | null
+      /** Main-loop requests of the turn in progress, and the prompt sizes of its first and last. */
       steps: number
+      turnFirst: number
+      turnLast: number
       /** Failed or repeated main-loop tool calls in a row. */
       strikes: number
       lastCall: string | null
@@ -63,6 +83,9 @@ declare module 'claude-code' {
       /** /router style for this session; null follows the `style` option. */
       style: Style | null
       ledger: Ledger
+      /** Crew workers by agent id, and the prompt size of each one's last and first request. */
+      workers: string[]
+      workerWarm: Record<string, { tokens: number; at: number; first: number }>
       /** The line shown beneath the turn's answer. */
       note: string | null
     }

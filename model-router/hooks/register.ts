@@ -1,13 +1,13 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { AgentInfo, AgentStatus, EngineInterface, Register } from 'claude-code'
 
-import type { Effort, Ledger, Route, Style, Tier } from '../types'
+import type { Effort, Ledger, Route, Sent, Style, Tier } from '../types'
 import { ORDER, heuristic, isFollowUp, layaQuestion, parseJudge, parseLaya, rank, rubric, words } from './classify'
 import type { Verdict } from './classify'
-import { MIN_CHARS, compress, familyOf, rtkFilter } from './compress'
-import { CACHE, PROFILE, addLedger, cacheKey, dollars, emptyLedger, learn, saved, size, switchDelta, usd } from './cost'
-import type { Cache, LedgerDelta, Profile } from './cost'
-import { WORKERS, crewSection, delegationHint, tierOfWorker, workerName, workerSpec } from './crew'
+import { MIN_CHARS, compress, familyOf, keepsSignal, rtkFilter } from './compress'
+import { CACHE, PROFILE, addLedger, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, promptOf, requestCost, saved, size, switchDelta, turnCost, usd } from './cost'
+import type { Cache, LedgerDelta, Profile, Target } from './cost'
+import { WORKERS, crewSection, delegationHint, tierOfWorker, workerName, workerSpec, workerType } from './crew'
 import { STYLE, isStyle } from './style'
 
 // Model per tier. Change the ids here to re-route.
@@ -29,22 +29,35 @@ const STRIKES = 3
 const LAYA_TIMEOUT_MS = 4_000
 const LOG_CAP = 500
 const TEE_SLOTS = 200
+const QUEUE_CAP = 10
 
 const route = atom({ plugin: 'model-router', key: 'route' } as const, null)
 const sessionModel = atom({ plugin: 'model-router', key: 'sessionModel' } as const, null)
 const isManual = atom({ plugin: 'model-router', key: 'isManual' } as const, false)
-const pending = atom({ plugin: 'model-router', key: 'pending' } as const, null)
+const queued = atom({ plugin: 'model-router', key: 'queued' } as const, [])
 const context = atom({ plugin: 'model-router', key: 'context' } as const, 0)
+const prefix = atom({ plugin: 'model-router', key: 'prefix' } as const, 0)
 const warm = atom({ plugin: 'model-router', key: 'warm' } as const, {})
+const lastSent = atom({ plugin: 'model-router', key: 'lastSent' } as const, null)
+const baseEffort = atom({ plugin: 'model-router', key: 'baseEffort' } as const, null)
+const shadow = atom({ plugin: 'model-router', key: 'shadow' } as const, null)
+const taskTier = atom({ plugin: 'model-router', key: 'taskTier' } as const, null)
 const steps = atom({ plugin: 'model-router', key: 'steps' } as const, 0)
+const turnFirst = atom({ plugin: 'model-router', key: 'turnFirst' } as const, 0)
+const turnLast = atom({ plugin: 'model-router', key: 'turnLast' } as const, 0)
 const strikes = atom({ plugin: 'model-router', key: 'strikes' } as const, 0)
 const lastCall = atom({ plugin: 'model-router', key: 'lastCall' } as const, null)
 const hasEscalated = atom({ plugin: 'model-router', key: 'hasEscalated' } as const, false)
 const style = atom({ plugin: 'model-router', key: 'style' } as const, null)
 const ledger = atom({ plugin: 'model-router', key: 'ledger' } as const, emptyLedger())
+const workers = atom({ plugin: 'model-router', key: 'workers' } as const, [])
+const workerWarm = atom({ plugin: 'model-router', key: 'workerWarm' } as const, {})
 const note = atom({ plugin: 'model-router', key: 'note' } as const, null)
 
 type $ = EngineInterface
+
+// What an agent of the crew may be doing and still take a message: a finished one resumes with its context.
+const LIVE = new Set<AgentStatus>(['pending', 'running', 'waiting', 'idle', 'completed'])
 
 type Config = {
   mode: 'route' | 'crew'
@@ -70,9 +83,10 @@ function pick<T extends string>(value: unknown, allowed: readonly T[], fallback:
   return (allowed as readonly unknown[]).includes(value) ? (value as T) : fallback
 }
 
-/** The tier a model id belongs to, for a session that has not been routed yet. */
+/** The tier a model id belongs to. */
 function tierOf(model: string): Tier | undefined {
-  return ORDER.find(t => model.toLowerCase().includes(t))
+  const id = canonical(model)
+  return ORDER.find(t => id.includes(t))
 }
 
 function describe(r: Route): string {
@@ -80,12 +94,23 @@ function describe(r: Route): string {
   return `${NAME[r.tier]}·${r.effort} (${how})`
 }
 
+// Every read-modify-write of the store, one after another: two hooks running at once (the main loop and a
+// worker) would otherwise both read the old value and one of their writes would be lost.
+let storeQueue: Promise<unknown> = Promise.resolve()
+
+function storeUpdate<T>($: $, key: string, fn: (value: T | undefined) => T): Promise<void> {
+  const run = storeQueue.then(async () => {
+    await $.store.set(key, fn((await $.store.get(key)) as T | undefined))
+  })
+  storeQueue = run.catch(() => {})
+  return run
+}
+
 // Calibration data: what was routed and why, read back with /router log.
 async function log($: $, event: string, data: Record<string, unknown>) {
   try {
-    const entries = ((await $.store.get('log')) as unknown[] | undefined) ?? []
     const entry = { at: new Date(await $.clock.now()).toISOString(), event, ...data }
-    await $.store.set('log', [...entries, entry].slice(-LOG_CAP))
+    await storeUpdate<unknown[]>($, 'log', entries => [...(entries ?? []), entry].slice(-LOG_CAP))
   } catch {}
 }
 
@@ -93,14 +118,14 @@ async function log($: $, event: string, data: Record<string, unknown>) {
 async function bill($: $, delta: LedgerDelta) {
   await update($, ledger, l => addLedger(l, delta))
   try {
-    const all = (await $.store.get('ledger')) as Ledger | undefined
-    await $.store.set('ledger', addLedger({ ...emptyLedger(), ...all }, delta))
+    await storeUpdate<Ledger>($, 'ledger', all => addLedger({ ...emptyLedger(), ...all }, delta))
   } catch {}
 }
 
 async function profiles($: $): Promise<Record<Tier, Profile>> {
   try {
-    return { ...PROFILE, ...((await $.store.get('profile')) as Partial<Record<Tier, Profile>> | undefined) }
+    const stored = ((await $.store.get('profile')) ?? {}) as Partial<Record<Tier, Partial<Profile>>>
+    return Object.fromEntries(ORDER.map(t => [t, { ...PROFILE[t], ...stored[t] }])) as Record<Tier, Profile>
   } catch {
     return PROFILE
   }
@@ -110,6 +135,18 @@ async function status($: $, text: string) {
   const l = await read($, ledger)
   const money = l.routedSteps > 0 ? ` · saved ≈${dollars(saved(l))}` : ''
   $.ui.status(`router: ${text}${money}`)
+}
+
+/**
+ * What a request on `tier` is sent with. The session's own tier keeps the session's model id and effort, so
+ * routing back to it changes nothing about the request and its cache.
+ */
+async function targetFor($: $, tier: Tier, cfg: Config): Promise<Target> {
+  const session = await read($, sessionModel)
+  if (session !== null && tierOf(session) === tier) {
+    return { model: session, effort: (await read($, baseEffort)) ?? undefined }
+  }
+  return { model: MODEL[tier], effort: cfg.effort[tier] }
 }
 
 // laya-serve classifies on your machine, for no tokens; its own wait is raced, since a prompt must not hang on it.
@@ -142,11 +179,15 @@ async function askJudge($: $, text: string, cfg: Config): Promise<Verdict | unde
     model: MODEL.haiku,
     system: rubric(cfg.enableFable),
     prompt: `<previous>\n${previous}\n</previous>\n\n<request>\n${text.slice(0, 4000)}\n</request>`,
-    maxTokens: 64,
+    // Room for Haiku's adaptive thinking before its one word; only what it writes is paid for.
+    maxTokens: 1_024,
     effort: 'low',
     timeoutMs: 8_000,
   })
   await bill($, { judgeCalls: 1, judgeUsd: usd(MODEL.haiku, reply.usage) ?? 0 })
+  if (!reply.isAnswered) {
+    await log($, 'judge', { reason: reply.reason })
+  }
   const tier = reply.isAnswered ? parseJudge(reply.text, cfg.enableFable) : undefined
   return tier === undefined ? undefined : { tier, confidence: 0.7, source: 'judge', why: 'judge' }
 }
@@ -168,71 +209,76 @@ async function classify($: $, text: string, cfg: Config): Promise<Verdict | unde
   }
 }
 
+async function recordSessionModel($: $) {
+  if ((await read($, sessionModel)) === null) {
+    const model = await $.session.model()
+    await update($, sessionModel, () => model)
+  }
+}
+
 /**
  * Moves the main loop to the verdict's tier when that is worth it.
  *
- * A model switch re-reads the whole conversation into the new model's cache, so a cheaper tier is taken only
+ * A model switch re-writes the whole conversation into the new model's cache, so a cheaper tier is taken only
  * when the turn it saves on outweighs that write. A harder tier is about quality, not money: `escalate: auto`
  * takes it, `suggest` names it in the status line and leaves the switch to the person.
  */
 async function apply($: $, verdict: Verdict, cfg: Config) {
+  await recordSessionModel($)
+  await update($, taskTier, () => verdict.tier)
+  const session = (await read($, sessionModel)) ?? MODEL[verdict.tier]
   const target: Route = { tier: verdict.tier, model: MODEL[verdict.tier], effort: cfg.effort[verdict.tier], source: verdict.source, confidence: verdict.confidence }
-  const recorded = await read($, sessionModel)
-  if (recorded === null) {
-    const model = await $.session.model()
-    await update($, sessionModel, () => model)
-  }
-  const current = await read($, route)
-  const fromModel = current?.model ?? (await read($, sessionModel)) ?? target.model
-  const fromTier = current?.tier ?? tierOf(fromModel)
+  const to = await targetFor($, verdict.tier, cfg)
+  const sent = await read($, lastSent)
+  const from: Target = sent === null ? { model: session, effort: (await read($, baseEffort)) ?? undefined } : { model: sent.model, effort: sent.effort ?? undefined }
+  const fromTier = tierOf(from.model)
   const tokens = await read($, context)
+  const isForced = verdict.source === 'forced'
 
   let take = true
   let why = verdict.why
-  if (verdict.source !== 'forced' && tokens > 0 && fromTier !== undefined && fromTier !== target.tier) {
+  if (!isForced && fromTier !== undefined && fromTier !== verdict.tier) {
+    const isHarder = rank(verdict.tier) > rank(fromTier)
     const profile = (await profiles($))[verdict.tier]
-    const delta = switchDelta(fromModel, target.model, tokens, await read($, warm), await $.clock.now(), profile, cfg.cache)
-    if (rank(target.tier) < rank(fromTier)) {
-      take = delta === undefined || delta < 0
-      why = delta === undefined ? why : take ? `saves ≈${dollars(-delta)}` : `switching costs ${dollars(delta)} more (cache)`
-    } else {
+    const delta = tokens > 0 ? switchDelta(from, to, tokens, await read($, warm), await $.clock.now(), profile, cfg.cache) : undefined
+    if (isHarder) {
       take = cfg.escalate === 'auto'
-      why = delta === undefined ? why : `${take ? '' : 'consider !' + target.tier + ': '}+${dollars(delta)} cache re-read`
+      const cost = delta === undefined ? '' : ` (+${dollars(delta)} with the cache re-write)`
+      why = take ? `${verdict.why}${cost}` : `consider !${verdict.tier}${cost}`
+    } else if (delta !== undefined) {
+      take = delta < 0
+      why = take ? `saves ≈${dollars(-delta)}` : `switching costs ${dollars(delta)} more (cache)`
     }
-    await bill($, take ? { switches: 1 } : { holds: 1 })
+    if (tokens > 0) {
+      await bill($, take ? { switches: 1 } : { holds: 1 })
+    }
   }
   await log($, 'route', { tier: verdict.tier, source: verdict.source, confidence: Number(verdict.confidence.toFixed(2)), why: verdict.why, taken: take, from: fromTier ?? null, context: tokens })
 
   if (take) {
     await update($, route, () => target)
-    await update($, note, () => `model-router: ${NAME[target.tier]} · ${verdict.why}`)
-    await status($, `${describe(target)}${why === verdict.why ? '' : ' · ' + why}`)
+    await update($, note, () => `model-router: ${NAME[target.tier]} · ${why}`)
+    await status($, `${describe({ ...target, effort: (to.effort as Effort | undefined) ?? target.effort })}${why === verdict.why ? '' : ' · ' + why}`)
   } else {
-    const kept = current ?? null
-    const name = fromTier === undefined ? fromModel : NAME[fromTier]
-    await update($, note, () => `model-router: stayed on ${name} · ${why}`)
-    await status($, `${kept === null ? name : describe(kept)} · ${verdict.tier} task, ${why}`)
+    const current = await read($, route)
+    const name = fromTier === undefined ? from.model : NAME[fromTier]
+    await update($, note, () => `model-router: stayed on ${name} · ${verdict.tier} task, ${why}`)
+    await status($, `${current === null ? name : describe(current)} · ${verdict.tier} task, ${why}`)
   }
 }
 
 /** Crew mode: the main loop stays on the orchestrator for the whole session, so its cache is never thrown away. */
-async function pinOrchestrator($: $, cfg: Config): Promise<Route> {
+async function pinOrchestrator($: $, cfg: Config) {
   const t = cfg.orchestrator
-  const pinned: Route = { tier: t, model: MODEL[t], effort: cfg.effort[t], source: 'crew', confidence: 1 }
-  const current = await read($, route)
-  if (current?.source !== 'crew') {
-    await update($, route, () => pinned)
-    if ((await read($, sessionModel)) === null) {
-      const model = await $.session.model()
-      await update($, sessionModel, () => model)
-    }
+  if ((await read($, route))?.source !== 'crew') {
+    await recordSessionModel($)
+    await update($, route, () => ({ tier: t, model: MODEL[t], effort: cfg.effort[t], source: 'crew', confidence: 1 }))
   }
-  return pinned
 }
 
 async function routePrompt($: $, text: string, cfg: Config) {
   const current = await read($, route)
-  if (current !== null && isFollowUp(text)) {
+  if (current !== null && isFollowUp(text, cfg.enableFable)) {
     await update($, note, () => `model-router: ${NAME[current.tier]} · follow-up`)
     await status($, `${describe({ ...current, source: 'follow-up' })}`)
     return
@@ -249,8 +295,84 @@ async function routePrompt($: $, text: string, cfg: Config) {
   await apply($, verdict, cfg)
 }
 
-// Crew workers by agent id: their steps are billed against the model the session would have done them on.
-const workers = new Set<string>()
+/** Routes one prompt as it enters: a forced tier, or the classifier's. Returns the text without its prefix. */
+async function enter($: $, text: string, forcedTier: Tier | null, cfg: Config) {
+  await update($, note, () => null)
+  if (forcedTier !== null) {
+    await apply($, { tier: forcedTier, confidence: 1, source: 'forced', why: 'forced' }, cfg)
+  } else {
+    await routePrompt($, text, cfg)
+  }
+}
+
+/** The worker of this tier that can take a message, the most recent one first. */
+async function liveWorker($: $, tier: Tier): Promise<AgentInfo | undefined> {
+  return (await $.agent.list()).filter(a => tierOfWorker(a.type) === tier && LIVE.has(a.status)).at(-1)
+}
+
+/** Where a message to this worker goes: a running agent by its name, a finished one by its id (it resumes). */
+function addressOf(a: AgentInfo): string {
+  return a.status === 'completed' ? a.id : (a.name ?? a.id)
+}
+
+/**
+ * Crew mode: a prompt that needs another model reaches the orchestrator with a hint to hand it over. Forced
+ * (`!opus …`): always, unless the orchestrator is that model already. Otherwise only for a harder tier than
+ * the orchestrator's: below it, a hand-off and a report cost more than doing the task.
+ */
+async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Config): Promise<string | undefined> {
+  await update($, note, () => null)
+  await pinOrchestrator($, cfg)
+  const orchestrates = `crew · ${NAME[cfg.orchestrator]} orchestrates`
+  // There is no Fable worker: a forced !fable goes to the strongest worker there is, and says so.
+  const asked = forcedTier ?? heuristic(text, false)?.tier
+  const tier = asked === 'fable' ? 'opus' : asked
+  const wanted = tier !== undefined && tier !== cfg.orchestrator && (forcedTier !== null || rank(tier) > rank(cfg.orchestrator))
+  if (tier === undefined || !wanted) {
+    await status($, orchestrates)
+    return undefined
+  }
+  const live = await liveWorker($, tier)
+  const swap = asked === 'fable' ? ' (no Fable worker: the strongest one takes it)' : ''
+  await update($, note, () => `model-router: crew · ${workerName(tier)}${swap}`)
+  await status($, `${orchestrates} · ${tier} task → ${workerName(tier)}${swap}`)
+  await log($, 'delegate', { tier, forced: forcedTier !== null })
+  return delegationHint(tier, forcedTier !== null, live === undefined ? undefined : addressOf(live))
+}
+
+// Agent calls the crew check refused: their errors are the mod's answer, not a struggling model.
+const denied = new Set<string>()
+
+function deny(toolUseId: string, reason: string) {
+  denied.add(toolUseId)
+  if (denied.size > 200) {
+    denied.delete(denied.values().next().value ?? '')
+  }
+  return { deny: reason }
+}
+
+/**
+ * Whether the next task is cheaper on this worker than on a fresh one: a worker with a warm, small context
+ * wins; one whose cache lapsed, or whose context has grown far past a fresh worker's, loses.
+ */
+async function reuseIsCheaper($: $, agentId: string, tier: Tier, cfg: Config): Promise<boolean> {
+  const state = (await read($, workerWarm))[agentId]
+  if (state === undefined) {
+    return true
+  }
+  const now = await $.clock.now()
+  const profile = (await profiles($))[tier]
+  const key = cacheKey(MODEL[tier], cfg.effort[tier])
+  const reuse = turnCost(MODEL[tier], cfg.effort[tier], state.tokens, { [key]: { tokens: state.tokens, at: state.at } }, now, profile, cfg.cache)
+  const fresh = turnCost(MODEL[tier], cfg.effort[tier], state.first, {}, now, profile, cfg.cache)
+  return reuse === undefined || fresh === undefined || reuse <= fresh
+}
+
+/** Every cache entry cut down to what a fresh conversation still shares with the old one: the system prompt and tools. */
+async function shrinkCaches($: $, keep: number) {
+  await update($, warm, w => Object.fromEntries(Object.entries(w).map(([k, v]) => [k, { ...v, tokens: Math.min(v.tokens, keep) }])))
+  await update($, shadow, s => (s === null ? null : { ...s, tokens: Math.min(s.tokens, keep) }))
+}
 
 // Bash commands by tool_use_id, so their results can be compressed by what ran. Lost on reload: harmless.
 const commands = new Map<string, string>()
@@ -283,11 +405,18 @@ async function viaRtk($: $, command: string, raw: string, cfg: Config): Promise<
   try {
     const r = await $.process.run(['rtk', 'pipe', '-f', filter], { stdin: raw, timeoutMs: 5_000 })
     const out = r.stdout.trim()
-    return r.exitCode === 0 && out !== '' && out.length < raw.length ? out : undefined
+    // A summary that lost the failures the output shows is a false "all good": the output goes to compress().
+    return r.exitCode === 0 && out !== '' && out.length < raw.length && keepsSignal(raw, out) ? out : undefined
   } catch {
     return undefined
   }
 }
+
+// Where the next full output goes: a ring of TEE_SLOTS files. The ring's start is read from the store once per
+// load (so it carries on across sessions) and every slot after it is counted here, synchronously, so two
+// results stored at the same moment never share a slot.
+let teeStart: Promise<number> | undefined
+let teeTaken = 0
 
 /**
  * Keeps the whole output on disk, so nothing compression drops is lost for good: a ring of TEE_SLOTS files
@@ -295,11 +424,14 @@ async function viaRtk($: $, command: string, raw: string, cfg: Config): Promise<
  */
 async function tee($: $, id: string, command: string, raw: string): Promise<string | undefined> {
   try {
+    teeStart ??= $.store.get('teeSlot').then(v => Number(v ?? 0), () => 0)
+    const taken = teeTaken++
+    const slot = ((await teeStart) + taken) % TEE_SLOTS
+    await storeUpdate<number>($, 'teeSlot', () => slot + 1)
     const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
     const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? (home === undefined ? undefined : `${home}/.claude`)
-    const base = (config ?? (await $.env.get('TMPDIR')) ?? (await $.env.get('TEMP')) ?? '/tmp').replace(/[\\/]+$/, '')
-    const slot = Number((await $.store.get('teeSlot')) ?? 0) % TEE_SLOTS
-    await $.store.set('teeSlot', slot + 1)
+    // Forward slashes everywhere: Windows takes them, and Git Bash would eat a backslash.
+    const base = (config ?? (await $.env.get('TMPDIR')) ?? (await $.env.get('TEMP')) ?? '/tmp').replace(/\\/g, '/').replace(/\/+$/, '')
     const path = `${base}/model-router/tee/${slot}.txt`
     await $.fs.write(path, `# model-router: full output of ${id}: ${command.slice(0, 200)}\n${raw}`)
     return path
@@ -321,15 +453,19 @@ async function shrink($: $, block: Block, cfg: Config): Promise<Block> {
     return block
   }
 
-  let out = await viaRtk($, command, raw, cfg)
-  const path = await tee($, id, command, raw)
-  if (out === undefined) {
-    const c = compress(raw, family, { allowCut: path !== undefined })
-    out = c.hidden > 0 ? `${c.text}\n[model-router: ${c.hidden} lines hidden${path ? `; full output: ${path} (grep or sed -n it)` : ''}]` : c.text
-  } else if (path !== undefined) {
-    out = `${out}\n[model-router: filtered by rtk; full output: ${path} (grep or sed -n it)]`
+  const filtered = await viaRtk($, command, raw, cfg)
+  let body = filtered ?? compress(raw, family, { allowCut: true }).text
+  if (body === raw) {
+    return block
   }
-  if (out.length >= raw.length) {
+  // Whatever is no longer in the result is on disk, or the result does not drop it.
+  const path = await tee($, id, command, raw)
+  if (path === undefined && filtered === undefined) {
+    body = compress(raw, family, { allowCut: false }).text
+  }
+  const out = path === undefined ? body : `${body}\n[model-router: ${filtered === undefined ? 'compressed' : 'filtered by rtk'}; full output: '${path}' (grep or sed -n it)]`
+  // The note counts against the saving: under 10% saved, the output goes as it came.
+  if (out.length > raw.length * 0.9) {
     return block
   }
   await bill($, { compressions: 1, rawChars: raw.length, keptChars: out.length })
@@ -341,17 +477,19 @@ async function report($: $, cfg: Config): Promise<string> {
   const all = { ...emptyLedger(), ...((await $.store.get('ledger')) as Ledger | undefined) }
   const r = await read($, route)
   const manual = await read($, isManual)
+  const base = (await read($, sessionModel)) ?? 'your /model'
   const s = (await read($, style)) ?? cfg.style
   const turns = (l: Ledger) => ORDER.filter(t => l.turns[t] > 0).map(t => `${NAME[t]} ${l.turns[t]}`).join(' · ') || '—'
-  const money = (l: Ledger) => `≈${dollars(saved(l))} (${l.routedSteps} routed steps: ${dollars(l.actualUsd)} instead of ${dollars(l.baselineUsd)}; judge ${l.judgeCalls}× ${dollars(l.judgeUsd)})`
+  const money = (l: Ledger) =>
+    l.baselineUsd === 0 ? '—' : `≈${dollars(saved(l))}: ${dollars(l.actualUsd)} spent instead of ${dollars(l.baselineUsd)}, ${l.routedSteps} requests routed, judge ${l.judgeCalls}× ${dollars(l.judgeUsd)}`
   const kept = (l: Ledger) => (l.compressions === 0 ? '—' : `${l.compressions}× · ${size(l.rawChars)} → ${size(l.keptChars)} chars · ≈${size((l.rawChars - l.keptChars) / 4)} tokens kept out of context`)
   return [
-    `model-router · ${manual ? 'off (/model was changed by hand; /router on resumes)' : r === null ? 'not routed yet' : describe(r)} · style ${s} · compression ${cfg.compress ? 'on' : 'off'}${cfg.useRtk && (await rtk) ? ' (rtk)' : ''}`,
+    `model-router · ${cfg.mode} · ${manual ? 'off (/model was changed by hand; /router on resumes)' : r === null ? 'not routed yet' : describe(r)} · style ${s} · compression ${cfg.compress ? 'on' : 'off'}${cfg.useRtk && (await rtk) ? ' (rtk)' : ''}`,
     '',
     `| | this session | all time |`,
     `|---|---|---|`,
     `| turns | ${turns(session)} | ${turns(all)} |`,
-    `| saved | ${money(session)} | ${money(all)} |`,
+    `| saved vs ${base} | ${money(session)} | ${money(all)} |`,
     `| switches / holds | ${session.switches} / ${session.holds} | ${all.switches} / ${all.holds} |`,
     `| bash output | ${kept(session)} | ${kept(all)} |`,
     '',
@@ -360,7 +498,7 @@ async function report($: $, cfg: Config): Promise<string> {
 }
 
 export const register: Register = (on, options) => {
-  const base = String(options.layaUrl ?? '').trim().replace(/\/+$/, '')
+  const laya = String(options.layaUrl ?? '').trim().replace(/\/+$/, '')
   const key = String(options.layaApiKey ?? '')
   const cfg: Config = {
     mode: pick(options.mode, ['route', 'crew'] as const, 'route'),
@@ -374,9 +512,11 @@ export const register: Register = (on, options) => {
     compress: flag(options.compress, true),
     useRtk: flag(options.useRtk, true),
     showNote: flag(options.showNote, true),
-    layaUrl: base,
+    layaUrl: laya,
     layaHeaders: key === '' ? {} : { authorization: `Bearer ${key}` },
   }
+  // Crew spawns in flight, by tier: two Agent calls in one response must not both pass the check.
+  const starting = new Set<Tier>()
 
   on('session.start', async ($, e, next) => {
     // Not awaited: startup never waits on a process.
@@ -400,7 +540,12 @@ export const register: Register = (on, options) => {
       await update($, isManual, () => true)
       await update($, route, () => null)
       $.ui.status('router: off')
-      return { text: 'model-router: routing off for this session; requests go to /model. `/router on` resumes.' }
+      return {
+        text:
+          cfg.mode === 'crew'
+            ? 'model-router: crew off for this session; the session keeps /model and stops delegating (the system prompt changes once, so the next request re-reads the conversation uncached). `/router on` resumes.'
+            : 'model-router: routing off for this session; requests go to /model. `/router on` resumes.',
+      }
     }
     if (sub === 'on') {
       const model = await $.session.model()
@@ -410,10 +555,15 @@ export const register: Register = (on, options) => {
       return { text: `model-router: routing on; the next prompt is routed (from ${model}).` }
     }
     if (sub === 'style') {
+      const current = (await read($, style)) ?? cfg.style
       if (!isStyle(arg)) {
-        return { text: `model-router: style is ${(await read($, style)) ?? cfg.style}; choose terse, adhd or off.` }
+        return { text: `model-router: style is ${current}; choose terse, adhd or off.` }
       }
-      await update($, style, () => arg)
+      if (arg !== current) {
+        // The system prompt changes after the shared part: every model re-writes the conversation once.
+        await update($, style, () => arg)
+        await shrinkCaches($, 0)
+      }
       return { text: `model-router: style ${arg}. The system prompt changes once, so the next request re-reads the conversation uncached.` }
     }
     if (sub === 'log') {
@@ -430,72 +580,91 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    // A prompt that joins a running turn keeps that turn's model.
-    if (e.turnId !== undefined) {
+    if (e.isMeta === true) {
       return next(e)
     }
-    await update($, note, () => null)
-    await update($, hasEscalated, () => false)
-    await update($, steps, () => 0)
-    await update($, strikes, () => 0)
-    if (e.isMeta === true || (await read($, isManual))) {
-      return next(e)
-    }
-    if (cfg.mode === 'crew') {
-      // No model switch ever: a prompt that needs another model becomes a hint to hand it to that worker.
-      await pinOrchestrator($, cfg)
-      if (e.command !== undefined) {
+    if (await read($, isManual)) {
+      // Routing is off: a !tier prefix is still not meant for the model.
+      const prefix = e.command === undefined ? FORCE.exec(e.text) : null
+      if (prefix === null) {
         return next(e)
       }
-      const forced = FORCE.exec(e.text)
-      const tier = forced !== null ? ((forced[1] ?? 'opus').toLowerCase() as Tier) : heuristic(e.text, false)?.tier
-      const text = forced !== null ? e.text.slice(forced[0].length) : e.text
-      if (tier === undefined || (tier === cfg.orchestrator && forced === null) || !WORKERS.includes(tier)) {
-        return next({ ...e, text })
+      $.ui.status(`router: off, so ${prefix[0].trim()} was ignored (/router on resumes)`)
+      return next({ ...e, text: e.text.slice(prefix[0].length) })
+    }
+    const forced = e.command === undefined ? FORCE.exec(e.text) : null
+    const forcedTier = forced === null ? null : ((forced[1] ?? 'opus').toLowerCase() as Tier)
+    const text = forced === null ? e.text : e.text.slice(forced[0].length)
+    if (cfg.mode === 'crew') {
+      // Crew never switches models, so a prompt typed during a turn takes its hint now, like any other.
+      const hint = e.command === undefined ? await delegation($, text, forcedTier, cfg) : undefined
+      return next(hint === undefined ? { ...e, text } : { ...e, text, context: [...(e.context ?? []), hint] })
+    }
+    // Typed during a running turn: it runs on that turn's model, or waits for a turn of its own, routed then.
+    if (e.turnId !== undefined) {
+      if (e.command === undefined) {
+        await update($, queued, q => [...q, { text, tier: forcedTier }].slice(-QUEUE_CAP))
       }
-      await update($, note, () => `model-router: crew · ${workerName(tier)}`)
-      await status($, `crew · ${NAME[cfg.orchestrator]} orchestrates · ${tier} task → ${workerName(tier)}`)
-      await log($, 'delegate', { tier, forced: forced !== null })
-      return next({ ...e, text, context: [...(e.context ?? []), delegationHint(tier, forced !== null)] })
+      return next(forced === null ? e : { ...e, text })
+    }
+    // A prompt that ran inside an earlier turn and is now typed again is a new prompt, routed here.
+    if ((await read($, queued)).some(q => q.text === text)) {
+      await update($, queued, q => q.filter(x => x.text !== text))
     }
     if (e.command !== undefined) {
-      // A skill's text exists only once it expands: route it at skill.prompt, or at the first step.
-      const name = e.command.name
-      if (name !== 'router' && (await $.command.list()).some(c => c.name === name && (c.source === 'user' || c.source === 'plugin'))) {
-        await update($, pending, () => e.text.trim())
+      // A user or plugin command (a skill): routed by what was typed and what the command says it does, not by
+      // its expanded instructions, whose length and vocabulary say nothing about this task.
+      const command = (await $.command.list()).find(c => c.name === e.command?.name)
+      if (command !== undefined && e.command.name !== 'router') {
+        if (command.source === 'user' || command.source === 'plugin') {
+          await enter($, `${e.command.args}\n(${command.description})`, null, cfg)
+        } else {
+          // Claude Code's own prompt commands (/code-review, /security-review, /init) and MCP prompts: no rule
+          // reads them well, and they should not inherit the last prompt's cheaper tier. Your /model runs them.
+          await update($, note, () => null)
+          await update($, route, () => null)
+        }
       }
       return next(e)
     }
-    const forced = FORCE.exec(e.text)
-    if (forced !== null) {
-      const tier = (forced[1] ?? 'opus').toLowerCase() as Tier
-      await apply($, { tier, confidence: 1, source: 'forced', why: 'forced' }, cfg)
-      return next({ ...e, text: e.text.slice(forced[0].length) })
-    }
-    await routePrompt($, e.text, cfg)
-    return next(e)
+    await enter($, text, forcedTier, cfg)
+    return next(forced === null ? e : { ...e, text })
   }).catch(($, e, next) => next(e)) // routing is best effort: never hold a prompt back
 
-  // Some accounts (team/organization) have no skill.prompt; the first step routes the typed command then.
-  try {
-    on('skill.prompt', async ($, e, next) => {
-      const typed = await read($, pending)
-      if (typed !== null) {
-        await update($, pending, () => null)
-        await routePrompt($, `${typed}\n\n${e.text.slice(0, 2000)}`, cfg)
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      await update($, steps, () => 0)
+      await update($, turnFirst, () => 0)
+      await update($, turnLast, () => 0)
+      await update($, strikes, () => 0)
+      await update($, lastCall, () => null)
+      await update($, hasEscalated, () => false)
+      // A prompt that waited behind the last turn is routed now that its own turn begins.
+      const waiting = (await read($, queued)).find(q => q.text === e.text)
+      if (waiting !== undefined && !(await read($, isManual))) {
+        await update($, queued, q => q.filter(x => x !== waiting))
+        await enter($, waiting.text, waiting.tier, cfg)
       }
-      return next(e)
-    }).catch(($, e, next) => next(e))
-  } catch {}
+    }
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('turn.step', async function* ($, e, next) {
+    const startedAt = await $.clock.now()
     if (e.agentId !== undefined) {
       const result = yield* next(e)
       try {
-        const baseline = await read($, sessionModel)
-        if (workers.has(e.agentId) && result.usage !== null && baseline !== null) {
-          const actual = usd(result.usage.model || e.model, result.usage, cfg.cache)
-          const would = usd(baseline, result.usage, cfg.cache)
+        const base = await read($, sessionModel)
+        const u = result.usage
+        const id = e.agentId
+        if (u !== null && (await read($, workers)).includes(id)) {
+          const prompt = promptOf(u)
+          await update($, workerWarm, w => ({ ...w, [id]: { tokens: prompt, at: startedAt, first: w[id]?.first ?? prompt } }))
+        }
+        if (u !== null && base !== null && (await read($, workers)).includes(id)) {
+          // A worker's request against the same request made by a subagent on the session's own model.
+          const actual = usd(u.model || e.model, u, cfg.cache)
+          const would = usd(base, u, cfg.cache)
           if (actual !== undefined && would !== undefined) {
             await bill($, { routedSteps: 1, actualUsd: actual, baselineUsd: would })
           }
@@ -503,46 +672,54 @@ export const register: Register = (on, options) => {
       } catch {}
       return result
     }
-    const typed = await read($, pending)
-    if (typed !== null) {
-      await update($, pending, () => null)
-      if (words(typed) >= 3) {
-        await routePrompt($, typed, cfg)
-      }
-    }
-    await update($, steps, n => n + 1)
 
+    await update($, baseEffort, () => e.effort ?? null)
     let routed = e
     const chosen = await read($, route)
-    if (chosen !== null) {
-      // A /model by hand after routing wins for the rest of the session.
+    if (chosen !== null && !(await read($, isManual))) {
+      // A /model by hand after routing wins for the rest of the session (classic.PostModelSwitch says so first,
+      // where the build raises it; this catches the rest).
       const recorded = await read($, sessionModel)
       const model = await $.session.model()
-      if (recorded !== null && model !== recorded) {
+      if (recorded !== null && canonical(model) !== canonical(recorded)) {
         await update($, isManual, () => true)
         await update($, route, () => null)
         $.ui.status('router: /model changed by hand, routing off (/router on resumes)')
         await log($, 'manual', { from: chosen.tier, to: model })
-      } else {
-        // The session's own id when it is already that tier, so a variant it chose (`[1m]`) is kept.
-        routed = { ...e, model: tierOf(e.model) === chosen.tier ? e.model : chosen.model, effort: chosen.effort }
+      } else if (tierOf(e.model) !== chosen.tier) {
+        // On the session's own tier the request goes out as the session made it: same id, same effort, same cache.
+        routed = { ...e, model: chosen.model, effort: chosen.effort }
       }
     }
+    const n = await update($, steps, k => k + 1)
 
     const result = yield* next(routed)
     // Never throw from here: the request already ran.
     try {
       const u = result.usage
       if (u !== null) {
-        const total = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens + u.output_tokens
-        const now = await $.clock.now()
+        const prompt = promptOf(u)
+        const total = prompt + u.output_tokens
+        const sent: Sent = { model: routed.model, effort: routed.effort ?? null }
         await update($, context, () => total)
-        await update($, warm, w => ({ ...w, [cacheKey(routed.model)]: { tokens: total, at: now } }))
-        if (routed.model !== e.model) {
-          const actual = usd(u.model || routed.model, u, cfg.cache)
-          const baseline = usd(e.model, u, cfg.cache)
-          if (actual !== undefined && baseline !== undefined) {
-            await bill($, { routedSteps: 1, actualUsd: actual, baselineUsd: baseline })
+        await update($, prefix, p => (p === 0 ? prompt : p))
+        await update($, lastSent, () => sent)
+        // The cache now holds this request's prompt (its answer is written by the next request), and the entry
+        // lives from when the request was made, not from when its answer arrived.
+        await update($, warm, w => ({ ...w, [cacheKey(sent.model, sent.effort ?? undefined)]: { tokens: prompt, at: startedAt } }))
+        await update($, turnLast, () => prompt)
+        if (n === 1) {
+          await update($, turnFirst, () => prompt)
+        }
+        if (!(await read($, isManual))) {
+          // The baseline: this request on the session's own model, read from that model's own cache as it would
+          // stand had every request gone there. A switch's cache write then shows as the cost it is.
+          const was = await read($, shadow)
+          const baseline = requestCost(e.model, prompt, cachedOf(was ?? undefined, prompt, startedAt, cfg.cache), u.output_tokens, cfg.cache)
+          const actual = requestCost(u.model || routed.model, prompt, u.cache_read_input_tokens, u.output_tokens, cfg.cache)
+          await update($, shadow, () => ({ tokens: prompt, at: startedAt }))
+          if (baseline !== undefined && actual !== undefined) {
+            await bill($, { routedSteps: canonical(routed.model) === canonical(e.model) ? 0 : 1, actualUsd: actual, baselineUsd: baseline })
           }
         }
       }
@@ -560,10 +737,15 @@ export const register: Register = (on, options) => {
       const r = await read($, route)
       if (r !== null) {
         await bill($, { turns: { [r.tier]: 1 } })
-        if (e.usage !== undefined && e.reason === 'answer') {
-          const all = await profiles($)
-          await $.store.set('profile', { ...all, [r.tier]: learn(all[r.tier], await read($, steps), e.usage.output_tokens) })
-        }
+      }
+      // The turn's shape is learned into the tier of the task it was, not the model it ran on; crew turns and
+      // turns that escalated midway say nothing about a task tier.
+      const task = await read($, taskTier)
+      const n = await read($, steps)
+      if (task !== null && cfg.mode === 'route' && !(await read($, hasEscalated)) && e.usage !== undefined && e.reason === 'answer' && n > 0) {
+        const added = n > 1 ? ((await read($, turnLast)) - (await read($, turnFirst))) / (n - 1) : undefined
+        const output = e.usage.output_tokens
+        await storeUpdate<Partial<Record<Tier, Partial<Profile>>>>($, 'profile', stored => ({ ...stored, [task]: learn(stored?.[task] ?? {}, PROFILE[task], n, output, added) }))
       }
       const text = await read($, note)
       if (cfg.showNote && text !== null) {
@@ -573,24 +755,47 @@ export const register: Register = (on, options) => {
     return done
   })
 
-  // A subagent that names no model takes the turn's cheaper tier. A complex turn leaves subagents on their own
-  // default, and a fork inherits the parent, so both pass through.
   on('agent.spawn', async ($, e, next) => {
-    const worker = cfg.mode === 'crew' && e.resume === undefined ? tierOfWorker(e.subagentType) : undefined
+    const worker = cfg.mode === 'crew' && e.resume === undefined && !(await read($, isManual)) ? tierOfWorker(e.subagentType) : undefined
     if (worker !== undefined) {
-      // One worker per model: a second would start with a cold cache. Point the model at the one that is warm.
-      const live = (await $.agent.list()).find(a => a.type === e.subagentType && (a.status === 'idle' || a.status === 'running' || a.status === 'waiting' || a.status === 'pending'))
-      if (live !== undefined) {
-        return { deny: `${workerName(worker)} is already running as ${live.teammateId ?? live.id}: send it this task with SendMessage to that name, so it keeps its warm cache.` }
+      const name = workerName(worker)
+      if (e.parentAgentId !== undefined && (await read($, workers)).includes(e.parentAgentId)) {
+        return deny(e.tool_use_id, 'A worker does its task itself: do the work here and report.')
       }
-      const started = await next({ ...e, model: MODEL[worker] })
-      if (started.agentId !== undefined) {
-        workers.add(started.agentId)
+      // One worker per model, while reusing it is cheaper than a fresh one. Two calls in one response must not
+      // both pass the check, hence the synchronous claim.
+      if (starting.has(worker)) {
+        return deny(e.tool_use_id, `${name} is being started by another call: wait for it, then send it this task with SendMessage.`)
       }
-      return started
+      starting.add(worker)
+      try {
+        // A spawn under another name (worker-opus-2) is the way past a worker that stopped answering.
+        const isFresh = e.name !== undefined && e.name !== name
+        const live = isFresh ? undefined : await liveWorker($, worker)
+        if (live !== undefined && (await reuseIsCheaper($, live.id, worker, cfg))) {
+          const to = addressOf(live)
+          const resumes = live.status === 'completed' ? ' (it resumes with what it learned)' : ''
+          return deny(e.tool_use_id, `${name} is already started: send this task with SendMessage to "${to}"${resumes}, so it keeps its warm cache. If it does not answer, spawn again with name "${name}-2".`)
+        }
+        const started = await next({ ...e, subagentType: workerType(worker), model: MODEL[worker] })
+        if (started.agentId !== undefined) {
+          const id = started.agentId
+          await update($, workers, w => [...w, id].slice(-50))
+        }
+        return started
+      } finally {
+        starting.delete(worker)
+      }
     }
+    // Crew mode leaves every other agent alone: the orchestrator's model is a setting, not a judgment of the task.
+    if (cfg.mode === 'crew') {
+      return next(e)
+    }
+    // A general-purpose subagent inherits the session's model; on a cheaper turn it takes the turn's model.
+    // Every other agent type may pin its own model in its definition, which this hook cannot see: left alone.
     const r = await read($, route)
-    if (r === null || rank(r.tier) >= rank('opus') || e.subagentType === 'fork' || e.model !== undefined) {
+    const inherits = e.subagentType === 'general-purpose' && e.provider.plugin === 'engine' && !e.fork && e.isTeammate !== true && e.model === undefined
+    if (r === null || !inherits || rank(r.tier) >= rank('opus') || (await read($, isManual))) {
       return next(e)
     }
     return next({ ...e, model: r.model })
@@ -608,9 +813,9 @@ export const register: Register = (on, options) => {
         const call = JSON.stringify({ ...e, tool_use_id: undefined })
         const isRetry = call === (await read($, lastCall))
         await update($, lastCall, () => call)
-        const failed = result.deny === undefined && result.isError === true
+        const failed = result.deny === undefined && result.isError === true && !denied.has(e.tool_use_id)
         const n = await update($, strikes, k => (failed || isRetry ? k + 1 : 0))
-        const up = ORDER[rank(r.tier) + 1]
+        const up = cfg.mode === 'crew' ? WORKERS[WORKERS.indexOf(r.tier) + 1] : ORDER[rank(r.tier) + 1]
         if (n >= STRIKES && up !== undefined && (up !== 'fable' || cfg.enableFable) && !(await read($, hasEscalated))) {
           await update($, hasEscalated, () => true)
           const reason = failed ? 'tools keep failing' : 'going in circles'
@@ -624,7 +829,7 @@ export const register: Register = (on, options) => {
           } else {
             await status($, `${reason}, consider !${up}`)
           }
-          await log($, 'escalate', { from: r.tier, to: up, reason, taken: cfg.escalate === 'auto' })
+          await log($, 'escalate', { from: r.tier, to: up, reason, taken: cfg.mode === 'route' && cfg.escalate === 'auto' })
         }
       }
     } catch {}
@@ -643,21 +848,56 @@ export const register: Register = (on, options) => {
     return next({ ...e, message: { ...e.message, content } })
   }).catch(($, e, next) => next(e))
 
-  // /clear empties the conversation and a compaction replaces it: no model's cache holds it any more.
+  // Who changed the model: the person (routing stops), the engine's own fallback (routing pauses until the next
+  // prompt and the new model becomes the baseline), or a resumed session (a new baseline).
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    try {
+      if (e.source === 'command' || e.source === 'picker' || e.source === 'sdk') {
+        if (!(await read($, isManual)) && (await read($, route)) !== null) {
+          await log($, 'manual', { to: e.to_model, source: e.source })
+        }
+        await update($, isManual, () => true)
+        await update($, route, () => null)
+      } else {
+        await update($, sessionModel, () => e.to_model)
+        if (e.source === 'auto') {
+          await update($, route, () => null)
+          await log($, 'fallback', { from: e.from_model, to: e.to_model })
+        }
+      }
+    } catch {}
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // /clear starts a new conversation and /resume another one: only the system prompt and tools stay cached.
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') {
+    if (e.reason === 'clear' || e.reason === 'resume') {
+      const keep = await read($, prefix)
       await update($, route, () => null)
-      await update($, context, () => 0)
-      await update($, warm, () => ({}))
+      await update($, context, () => keep)
+      await update($, queued, () => [])
+      await shrinkCaches($, keep)
+      if (e.reason === 'resume') {
+        await update($, sessionModel, () => null)
+        await update($, isManual, () => false)
+        await update($, lastSent, () => null)
+      }
     }
     return next(e)
   })
 
+  // A compaction replaces the conversation with its summary: the caches keep the system prompt and tools.
   on('session.compact', async ($, e, next) => {
     const done = await next(e)
-    await update($, warm, () => ({}))
+    try {
+      if (e.agentId === undefined && e.trigger !== 'precompute' && done.skip === undefined) {
+        const keep = await read($, prefix)
+        await update($, context, () => done.tokensAfter ?? keep)
+        await shrinkCaches($, keep)
+      }
+    } catch {}
     return done
-  })
+  }).catch(($, e, next) => next(e))
 
   // Output economy: one section at the end of the system prompt, inside the prompt cache.
   on('prompt.compose', async ($, e, next) => {
@@ -666,12 +906,15 @@ export const register: Register = (on, options) => {
       return composed
     }
     const added = []
-    const text = STYLE[(await read($, style)) ?? cfg.style]
+    const isTeammate = e.traits.includes('teammate')
+    const chosen = (await read($, style)) ?? cfg.style
+    // A teammate's reader is the orchestrator, not the person: it gets the terse rules, never the ADHD shape.
+    const text = STYLE[isTeammate && chosen === 'adhd' ? 'terse' : chosen]
     if (text !== undefined) {
       added.push({ id: 'model-router:style', text, scope: 'session' as const })
     }
-    if (cfg.mode === 'crew' && !e.traits.includes('teammate')) {
-      added.push({ id: 'model-router:crew', text: crewSection(cfg.orchestrator, WORKERS), scope: 'session' as const })
+    if (cfg.mode === 'crew' && !isTeammate && e.tools.includes('Agent') && !(await read($, isManual))) {
+      added.push({ id: 'model-router:crew', text: crewSection(cfg.orchestrator, WORKERS, e.tools.includes('SendMessage')), scope: 'session' as const })
     }
     return added.length === 0 ? composed : { sections: [...composed.sections, ...added] }
   })

@@ -1,39 +1,67 @@
 // rtk-lite: the strategies of rtk (github.com/rtk-ai/rtk) for Bash output, in TypeScript, so they run
-// with nothing installed. Filter noise, collapse repeats, keep every failure, and never return something
-// longer than what came in. With the rtk binary on PATH, register.ts hands the commands rtk knows to `rtk pipe`.
+// with nothing installed. Drop what is provably noise, fold exact repeats into a count, keep every line that
+// carries an error, and cut only what is saved whole on disk. Anything that may be data passes as it came.
 
 /** Output shorter than this is left alone: the saving would not pay for the risk. */
 export const MIN_CHARS = 1_200
 const MAX_LINES = 250
 const HEAD = 80
 const TAIL = 100
-const KEEP_MIDDLE = 40
+const KEEP_MIDDLE = 200
+const AFTER_SIGNAL = 2
 const LINE_CAP = 500
 
 // eslint-disable-next-line no-control-regex
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g
 
-// Output the model may quote back into an Edit, or already shaped by the person: passed through verbatim.
-const VERBATIM = /^(cat|head|tail|sed|awk|less|more|bat|nl|xxd|od|hexdump|jq|yq|base64|diff|git\s+(show|diff|blame|cat-file))\b/
+// Output the model may quote back into an Edit, or reads as data: passed through verbatim.
+const VERBATIM_COMMAND = /^(cat|tac|head|tail|sed|awk|gawk|less|more|bat|nl|xxd|od|hexdump|jq|yq|base64|diff|cut|column|tr|strings|grep|egrep|fgrep|rg|ag|ack|find|fd|ls|tree|stat|readlink|realpath|file|wc|env|printenv|echo|printf|cmp|patch)$/
+const VERBATIM_LINE = [
+  /^git\s+(show|diff|blame|cat-file|grep|format-patch|ls-files|ls-tree|config|remote|branch|tag|log\b.*(\s-p\b|\s--patch\b|\s--stat\b|\s--format|\s--pretty)|stash\s+show)/,
+  /^gh\s+(pr|issue|run|api|release)\s+(diff|view|api|list)?/,
+  /^(docker|podman|kubectl|oc)\s+(inspect|get|describe|logs|config)\b/,
+  /^(curl|wget|http|xh)\b/,
+  /^(npm|pnpm|yarn)\s+(view|info|ls|list|why|explain|config)\b/,
+  /^(python3?|node|bun|deno|ruby|perl|php)\s+(-c|-e|--eval|-p)\b/,
+  /^(sqlite3|psql|mysql)\b/,
+]
 
-const TEST = /\b(jest|vitest|mocha|ava|pytest|py\.test|tox|nox|rspec|phpunit|pest|ctest|cargo\s+(test|nextest)|go\s+test|(npm|pnpm|yarn|bun)\s+(run\s+)?test|bun\s+test|deno\s+test|dotnet\s+test|mvn\b.*\btest|gradlew?\b.*\btest|mix\s+test|swift\s+test|claude\s+plugin\s+test)\b/
+const TEST =
+  /\b(jest|vitest|mocha|ava|pytest|py\.test|tox|nox|rspec|phpunit|pest|ctest|cargo\s+(test|nextest)|go\s+test|(npm|pnpm|yarn|bun)\s+(run\s+)?test|bun\s+test|deno\s+test|dotnet\s+test|mvn\b.*\btest|gradlew?\b.*\btest|mix\s+test|swift\s+test|claude\s+plugin\s+test)\b/
 const INSTALL =
   /\b((npm|pnpm|yarn|bun)\s+(i|install|add|ci|update|upgrade)|pip3?\s+install|uv\s+(pip|sync|add)|poetry\s+(install|add|update)|brew\s+(install|upgrade)|apt(-get)?\s+(install|upgrade)|cargo\s+(build|install|fetch|check)|go\s+(get|mod\s+download|build)|bundle\s+install|composer\s+(install|update|require)|docker\s+(pull|build|compose\s+(pull|build|up))|gem\s+install)\b/
 
 export type Family = 'test' | 'install' | 'generic'
 
-/** The simple commands of a command line: `a && b | c` is a, b, c, each without `VAR=x`, `sudo`, `time`. */
+const WRAPPERS = /^((\w+=("[^"]*"|'[^']*'|\S*))\s+|(sudo(\s+-[uUgh]\s+\S+|\s+-\S+)*|time|env(\s+-\S+)*|command|exec|nice(\s+-n\s*\S+)?|nohup|stdbuf(\s+-\S+)*|unbuffer|timeout(\s+-\S+)*\s+\S+|xargs(\s+-\S+(\s+\S+)?)*|do|then|else|elif|!|\{|\()\s+)+/
+
+/** One simple command as it runs: wrappers, keywords and the executable's directory gone, git's global options too. */
+function normalize(segment: string): string {
+  let s = segment.trim().replace(/^[({]\s*/, '').replace(WRAPPERS, '')
+  s = s.replace(/^(\S*\/)(\S+)/, '$2')
+  s = s.replace(/^git((\s+(-C\s+\S+|-c\s+\S+|--no-pager|--git-dir=\S+|--work-tree=\S+|--paginate|-P))+)/, 'git')
+  return s
+}
+
+/** The simple commands of a command line: `a && b | c`, the script of `bash -c '…'` and what `-exec`/`xargs` runs. */
 export function segments(command: string): string[] {
-  return command
-    .split(/&&|\|\||[;|\n]/)
-    .map(s => s.trim().replace(/^((\w+=\S*|sudo|time|env|command|exec|nice|nohup|timeout\s+\S+)\s+)+/, ''))
-    .filter(s => s !== '')
+  const inner = [...command.matchAll(/\b(?:ba|z|da)?sh\s+-c\s+(['"])([\s\S]*?)\1/g)].map(m => m[2] ?? '')
+  const execs = [...command.matchAll(/\s-exec(?:dir)?\s+(.+?)(?:\;|\s\+|$)/g)].map(m => m[1] ?? '')
+  return [command, ...inner, ...execs]
+    .flatMap(c => c.split(/&&|\|\||[;|\n]|\$\(|`/))
+    .map(normalize)
+    .filter(s => s !== '' && !/^(for|while|until|if|fi|done|esac|case)\b/.test(s))
+}
+
+function isVerbatim(segment: string): boolean {
+  const word = segment.split(/\s+/)[0] ?? ''
+  return VERBATIM_COMMAND.test(word) || VERBATIM_LINE.some(p => p.test(segment))
 }
 
 /** Undefined when the output must reach the model verbatim. */
 export function familyOf(command: string): Family | undefined {
   const parts = segments(command)
-  if (parts.length === 0 || parts.some(s => VERBATIM.test(s))) {
+  if (parts.length === 0 || parts.some(isVerbatim)) {
     return undefined
   }
   if (parts.some(s => TEST.test(s))) {
@@ -45,68 +73,72 @@ export function familyOf(command: string): Family | undefined {
   return 'generic'
 }
 
-// `rtk pipe -f <filter>` reads output on stdin. Only filters that parse what the plain command prints.
-const RTK_FILTERS: [RegExp, string][] = [
-  [/^cargo\s+(test|nextest)\b/, 'cargo-test'],
-  [/^(python3?\s+-m\s+)?pytest\b/, 'pytest'],
-  [/^((npx|bunx|pnpm\s+exec)\s+)?tsc\b/, 'tsc'],
-  [/^((npx|bunx|pnpm\s+exec)\s+)?vitest\b/, 'vitest'],
-  [/^((python3?\s+-m\s+)?mypy)\b/, 'mypy'],
-  [/^((npx|bunx)\s+)?prettier\b/, 'prettier'],
-  [/^(vendor\/bin\/)?phpunit\b/, 'phpunit'],
-  [/^ctest\b/, 'ctest'],
-  [/^go\s+build\b/, 'go-build'],
-  [/^(rg|grep)\b/, 'grep'],
-  [/^(find|fd)\b/, 'find'],
+// `rtk pipe -f <filter>` parses a command's own output. Only plain runs whose output rtk's parser expects:
+// a mode that prints something else (a listing, a config, help) would be summarized as a false "all good".
+const RTK_FILTERS: [RegExp, RegExp | undefined, string][] = [
+  [/^cargo\s+test\b/, /\s(--list|--help|-h|--no-run|--doc)\b/, 'cargo-test'],
+  [/^(python3?\s+-m\s+)?pytest\b/, /\s(--collect-only|--co|--fixtures|--markers|-h|--help|--version)\b/, 'pytest'],
+  [/^((npx|bunx|pnpm\s+exec)\s+)?tsc\b/, /\s(--showConfig|--list\w*|--explain\w*|--trace\w*|-h|--help|-v|--version|--init|--build|-b)\b/, 'tsc'],
+  [/^(python3?\s+-m\s+)?mypy\b/, /\s(-h|--help|--version)\b/, 'mypy'],
+  [/^go\s+build\b/, undefined, 'go-build'],
 ]
 
-/** The rtk filter for a single-command line, when there is one. */
+/** The rtk filter for a single plain command, when there is one. */
 export function rtkFilter(command: string): string | undefined {
   const parts = segments(command)
   const only = parts.length === 1 ? parts[0] : undefined
-  return only === undefined ? undefined : RTK_FILTERS.find(([pattern]) => pattern.test(only))?.[1]
+  return only === undefined ? undefined : RTK_FILTERS.find(([is, not]) => is.test(only) && (not === undefined || !not.test(` ${only}`)))?.[2]
 }
 
-// Lines that say nothing the model needs, in any output.
+// Lines that carry a failure, a warning or a result: never dropped, folded or cut.
+export const SIGNAL = /error|fail|exception|panic|traceback|assert|warn|✗|✘|×|denied|not found|fatal|cannot|unable|missing|undefined|expected|coverage|-->|^\s*at\s|^\s*File "/i
+
+/** A line that carries a signal, its own fold count aside (the `×` of `(×12)` is no failure mark). */
+function isSignal(line: string): boolean {
+  return SIGNAL.test(line.replace(/ {2}\(×\d+\)$/, ''))
+}
+
+/** True when an rtk summary keeps the failures the raw output shows. */
+export function keepsSignal(raw: string, filtered: string): boolean {
+  const failing = raw.split('\n').some(l => /error|fail|panic|traceback/i.test(l))
+  return !failing || /error|fail|panic|traceback/i.test(filtered)
+}
+
+// Lines that say nothing the model needs, in any output: redrawn bars, spinners, transfer progress.
 const NOISE = [
-  /^\s*[⠁-⣿]\s/, // spinners
-  /^\s*\d{1,3}(\.\d+)?%\s*[|[▕█▉▊▋▌▍▎▏#=>\- ]/, // progress bars
-  /^\s*[[(]?[#=>\-█░▒▓ ]{10,}[\])]?\s*\d{1,3}%/,
+  /^\s*[⠁-⣿]\s/,
+  /^\s*\d{1,3}(\.\d+)?%\s*[|[▕][#=>\-█▉▊▋▌▍▎▏░▒▓ ]{3,}/,
+  /^\s*[[(|]?[#=>\-█░▒▓]{10,}[\])|]?\s*\d{1,3}(\.\d+)?%\s*(\S+\s*\/\s*\S+)?\s*$/,
   /^(remote: )?(Enumerating|Counting|Compressing|Receiving|Resolving|Writing) (objects|deltas):/,
   /^[0-9a-f]{12}: (Pulling fs layer|Waiting|Downloading|Verifying Checksum|Download complete|Extracting|Pull complete|Already exists)/,
 ]
 
-// Lines that pass, in test output: counted, not shown.
+// One passing test, in test output: counted, not shown. Suite headers stay, so later output keeps its place.
 const PASSING = [
   /^\s*(✓|✔|√|☑)\s/,
-  /^\s*PASS(ED)?\b/,
   /^\s*ok\s+\d+\b/, // TAP
-  /^ok\s+\S+\s+[\d.]+s/, // go test, per package
+  /^ok\s+\S+\s+[\d.]+s\s*$/, // go test, a package with nothing more to say
   /^\s*---\s+PASS:/,
   /^\s*===\s+(RUN|PAUSE|CONT)\b/,
   /^test \S+ \.\.\. ok$/, // cargo
   /^\S+::\S+ PASSED\b/, // pytest -v
   /^\S+\.py \.+\s*(\[\s*\d+%\])?$/, // pytest dots
-  /^\s*\.+\s*$/, // dots
+  /^\s*\.+\s*$/,
   /^\s*\[\s*OK\s*\]/,
   /^\s*Compiling \S+ v\d/, // cargo build noise before the tests
 ]
 
-// Lines worth keeping from a middle that is cut.
-const SIGNAL = /error|fail|exception|panic|traceback|assert|warn|✗|✘|×|denied|not found|fatal|cannot|unable|missing|undefined|expected/i
-
 export type Compressed = {
   text: string
-  /** Lines the reader no longer sees in any form (not counting repeats folded into a count). */
+  /** Lines (or parts of lines) the reader no longer sees in any form; a repeat folded into a count is not one. */
   hidden: number
 }
 
-/** A line with its numbers, hashes and quoted values blanked: lines that differ only there fold. */
+/** A line with its numbers and hashes blanked: in install and build logs, lines that differ only there fold. */
 function shape(line: string): string {
   return line
     .replace(/0x[0-9a-f]+|\b[0-9a-f]{7,}\b/gi, 'h')
     .replace(/\d+(\.\d+)*/g, '#')
-    .replace(/(['"`]).*?\1/g, 'q')
     .replace(/\s+/g, ' ')
 }
 
@@ -124,8 +156,11 @@ export function compress(raw: string, family: Family, options: { allowCut: boole
     .split('\n')
     .map(l => (l.includes('\r') ? (l.split('\r').filter(s => s !== '').at(-1) ?? '') : l))
 
-  // 2. Noise, and passing tests.
+  // 2. Noise, and passing tests. A line that carries a signal is never either.
   lines = lines.filter(l => {
+    if (SIGNAL.test(l)) {
+      return true
+    }
     if (NOISE.some(p => p.test(l))) {
       hidden++
       return false
@@ -137,7 +172,8 @@ export function compress(raw: string, family: Family, options: { allowCut: boole
     return true
   })
 
-  // 3. Repeats: an exact run becomes one line with a count, a run of one shape keeps its ends.
+  // 3. Repeats. An exact run becomes one line with a count (nothing lost). In install and build logs, a run of
+  // lines that differ only in numbers keeps its ends; everywhere else such lines may be data, and stay.
   const folded: string[] = []
   for (let i = 0; i < lines.length; ) {
     const line = lines[i] ?? ''
@@ -148,9 +184,8 @@ export function compress(raw: string, family: Family, options: { allowCut: boole
       i = j
       continue
     }
-    // Lines that carry an error never fold into a count: every failure stays readable.
     const s = shape(line)
-    const folds = (l: string) => l.trim() !== '' && !SIGNAL.test(l) && shape(l) === s
+    const folds = (l: string) => family === 'install' && l.trim() !== '' && !SIGNAL.test(l) && shape(l) === s
     while (j < lines.length && folds(line) && folds(lines[j] ?? '')) j++
     if (j - i >= 4) {
       folded.push(line, `  … ${j - i - 2} similar lines …`, lines[j - 1] ?? '')
@@ -162,17 +197,40 @@ export function compress(raw: string, family: Family, options: { allowCut: boole
   }
   lines = folded
 
-  // 4. Long lines, blank runs.
-  lines = lines
-    .map(l => (l.length > LINE_CAP ? `${l.slice(0, LINE_CAP)}… [+${l.length - LINE_CAP} chars]` : l))
-    .filter((l, i, all) => !(l.trim() === '' && (all[i - 1] ?? '').trim() === ''))
+  // 4. Long lines, when there is more than one line and the line is no error; blank runs.
+  if (lines.length > 1) {
+    lines = lines.map(l => {
+      if (l.length <= LINE_CAP || isSignal(l)) {
+        return l
+      }
+      hidden++
+      return `${l.slice(0, LINE_CAP)}… [+${l.length - LINE_CAP} chars]`
+    })
+  }
+  lines = lines.filter((l, i, all) => !(l.trim() === '' && (all[i - 1] ?? '').trim() === ''))
 
-  // 5. Still too long: keep the head, the tail, and the lines that carry errors in between.
+  // 5. Still too long: the head, the tail, and every error line in between with the lines just after it
+  // (its location, its code frame). Only with the whole output saved on disk.
   if (options.allowCut && lines.length > MAX_LINES) {
     const middle = lines.slice(HEAD, lines.length - TAIL)
-    const kept = middle.filter(l => SIGNAL.test(l)).slice(0, KEEP_MIDDLE)
-    hidden += middle.length - kept.length
-    lines = [...lines.slice(0, HEAD), `… ${middle.length - kept.length} lines cut …`, ...kept, ...(kept.length > 0 ? ['…'] : []), ...lines.slice(-TAIL)]
+    const keep = new Set<number>()
+    middle.forEach((l, i) => {
+      if (isSignal(l)) {
+        for (let k = i; k <= Math.min(i + AFTER_SIGNAL, middle.length - 1); k++) keep.add(k)
+      }
+    })
+    const kept = [...keep].sort((a, b) => a - b).slice(0, KEEP_MIDDLE)
+    const dropped = middle.length - kept.length
+    const shown: string[] = []
+    let last = -1
+    for (const k of kept) {
+      if (k !== last + 1) shown.push('…')
+      shown.push(middle[k] ?? '')
+      last = k
+    }
+    if (last !== middle.length - 1) shown.push('…')
+    hidden += dropped
+    lines = [...lines.slice(0, HEAD), `… ${dropped} of ${middle.length} lines cut${keep.size > KEEP_MIDDLE ? ` (${keep.size - KEEP_MIDDLE} error lines among them)` : ''} …`, ...shown, ...lines.slice(-TAIL)]
   }
 
   if (passing > 0) {

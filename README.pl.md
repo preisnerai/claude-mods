@@ -7,11 +7,11 @@
 | | Co robi | Gdzie oszczędza |
 |---|---|---|
 | 🔀 **Routing** | Każdy prompt idzie do Haiku, Sonneta albo Opusa, zależnie od tego, czego wymaga. Lokalne reguły po polsku i angielsku rozpoznają jasne prompty bez wywołania modelu; tylko niejasne trafiają do sędziego Haiku (ok. $0.0001 za prompt). | Mniej tokenów Opusa |
-| 🧮 **Rachunek cache** | Zmiana modelu wyrzuca prompt cache: następne zapytanie czyta całą rozmowę od nowa po cenie zapisu. Przed każdą zmianą router wycenia turę na obu modelach przy Twoim rozmiarze kontekstu i stanie cache, i przełącza tylko wtedy, gdy to się opłaca. | Żadne przełączenie nie kosztuje więcej, niż oszczędza |
-| 🗜️ **Kompresja** | Wyjście Basha kurczy się, zanim trafi do rozmowy, w stylu rtk: bez pasków postępu i zaliczonych testów, powtórzenia zwinięte w licznik, każdy błąd zachowany. Pełne wyjście zostaje na dysku (`~/.claude/model-router/tee/`, ostatnie 200). Z zainstalowanym [rtk](https://github.com/rtk-ai/rtk) komendy, które rtk zna, idą przez `rtk pipe`. | Mniej wejścia w każdym kolejnym zapytaniu |
+| 🧮 **Rachunek cache** | Zmiana modelu wyrzuca prompt cache: następne zapytanie czyta całą rozmowę od nowa po cenie zapisu. Przed każdym zejściem na tańszy model router wycenia turę na obu modelach przy Twoim rozmiarze kontekstu i stanie cache, i schodzi tylko wtedy, gdy to się opłaca. | Żadne zejście na tańszy model nie kosztuje więcej, niż oszczędza |
+| 🗜️ **Kompresja** | Wyjście Basha kurczy się, zanim trafi do rozmowy, w stylu rtk: bez pasków postępu i zaliczonych testów, identyczne powtórzenia zwinięte w licznik, każda linia z błędem zachowana. Zawartość plików, diffy i dane przechodzą nietknięte. Pełne wyjście zostaje na dysku (`~/.claude/model-router/tee/`, ostatnie 200). Z zainstalowanym [rtk](https://github.com/rtk-ai/rtk) zwykłe uruchomienia `cargo test`, `pytest`, `tsc`, `mypy` i `go build` idą przez `rtk pipe`; podsumowanie, które gubi błędy, jest odrzucane. | Mniej wejścia w każdym kolejnym zapytaniu |
 | ✂️ **Krócej** | Jedna krótka sekcja promptu systemowego: bez wstępów, podsumowań i formułek na koniec, komendy w jednym wywołaniu, czytanie fragmentów plików. Tryb `adhd` zaczyna od następnej akcji, wg [i-have-adhd](https://github.com/ayghri/i-have-adhd). | Mniej tokenów wyjściowych, które kosztują 5× więcej niż wejściowe |
 
-`/router` pokazuje, ile to wszystko zaoszczędziło, w dolarach, dla tej sesji i łącznie.
+`/router` pokazuje, ile zaoszczędził routing (w dolarach) i ile tokenów kompresja trzymała poza kontekstem, dla tej sesji i łącznie.
 
 ## Instalacja
 
@@ -31,11 +31,12 @@ Liczby z modelu kosztów routera, dla sesji na Claude Opus 5.5 z ciepłym cache:
 
 | Kontekst w cache | Opus → Sonnet, zwykłe zadanie | Opus → Haiku, szybkie zadanie |
 |---:|---|---|
-| 40 tys. tokenów | **zostaje na Opusie**: zmiana kosztuje $0.12 więcej | **przełącza**: oszczędza $0.023 |
-| 100 tys. | **zostaje**: +$0.35 | **przełącza**: −$0.035 |
-| 400 tys. | **zostaje**: +$1.49 | **przełącza**: −$0.092 |
+| 40 tys. tokenów | **zostaje na Opusie**: remis (+$0.002) | **przełącza**: oszczędza $0.047 |
+| 100 tys. | **zostaje**: +$0.23 | **przełącza**: −$0.051 |
+| 150 tys. | **zostaje**: +$0.42 | **zostaje**: +$0.063 (stawka Haiku powyżej 100 tys.) |
+| 400 tys. | **zostaje**: +$1.37 | **zostaje**: +$0.23 |
 
-Opus 5.5 i Sonnet 5.5 czytają cache po tej samej cenie $0.20/MTok, więc w środku sesji Sonnet oszczędza tylko na wyjściu, a zapis rozmowy do jego cache kosztuje więcej. Haiku jest 40× tańszy od Opusa na wejściu, więc zejście na niego opłaca się nawet z zapisem. Gdy cache modelu wygasł (godzina bezczynności), obie strony płacą za zapis i wygrywa tańszy model.
+Opus 5.5 i Sonnet 5.5 czytają cache po tej samej cenie $0.20/MTok, więc w środku sesji Sonnet oszczędza tylko na wyjściu, a zapis rozmowy do jego cache kosztuje więcej. Haiku 5.5 jest 40× tańszy od Opusa na wejściu do 100 tys. tokenów, więc zejście na niego opłaca się nawet z zapisem; powyżej 100 tys. płaci stawkę 5× wyższą i ciepły Opus znów jest tańszy. Gdy cache modelu wygasł (godzina bezczynności), obie strony płacą za zapis i wygrywa tańszy model. Cache zależy też od effort, więc na Twoim modelu router zostawia Twój `/effort`.
 
 Trudniejsze zadania to kwestia jakości, nie pieniędzy: domyślnie router podnosi poziom, gdy prompt tego wymaga, i pokazuje koszt zmiany. Ustaw `escalate: suggest`, żeby router tylko podpowiadał w linii statusu.
 
@@ -47,13 +48,15 @@ Trudniejsze zadania to kwestia jakości, nie pieniędzy: domyślnie router podno
 4. Niejasne prompty: opcjonalnie [laya-serve](https://github.com/NandhaKishorM/laya) lokalnie, potem sędzia Haiku.
 5. Rachunek cache decyduje, czy przełączyć.
 
-Dodatkowo: ręczny `/model` wyłącza routing do końca sesji (`/router on` przywraca); trzy nieudane lub identyczne wywołania narzędzi z rzędu podnoszą poziom; subagenci bez wskazanego modelu dostają tańszy poziom tury; skille (`/mój-skill`) są kierowane po rozwiniętej treści.
+Dodatkowo: ręczny `/model` wyłącza routing do końca sesji (`/router on` przywraca), a automatyczny fallback silnika tylko go wstrzymuje do następnego promptu; trzy nieudane lub identyczne wywołania narzędzi z rzędu podnoszą poziom; subagent general-purpose bez wskazanego modelu dostaje tańszy poziom tury (inne typy agentów mogą mieć własny model i nie są ruszane); skille (`/mój-skill`) są kierowane po wpisanej linii i opisie komendy; prompty wpisane w trakcie tury są kierowane, gdy zaczyna się ich tura.
+
+Licznik oszczędności wycenia każde zapytanie dwa razy: tak, jak poszło, i tak, jak poszłoby na Twoim `/model` z jego własnym cache. Zapis cache po przełączeniu liczy się więc jako koszt.
 
 ## Tryb crew: jeden orkiestrator, trzech ciepłych workerów
 
-Ustaw `mode: crew`, a model w sesji nigdy się nie zmienia. Sesja główna zostaje na jednym modelu-orkiestratorze (domyślnie Sonnet), więc jej cache nie przepada, a pracę wykonują trwałe workery: `worker-haiku` (szukanie, czytanie kodu, podsumowania, komendy), `worker-sonnet` (jasne funkcje, poprawki, testy) i `worker-opus` (trudne bugi, architektura, audyty).
+Ustaw `mode: crew`, a sesja główna zostaje na jednym modelu-orkiestratorze (domyślnie Sonnet). Przechodzi na niego raz, przy pierwszym prompcie, i potem już się nie zmienia, więc jej cache nie przepada. Pracę wymagającą kilku wywołań narzędzi wykonują trwałe workery: `worker-haiku` (szukanie, czytanie kodu, podsumowania, komendy), `worker-sonnet` (jasne funkcje, poprawki, testy) i `worker-opus` (trudne bugi, architektura, audyty).
 
-Każdy worker to teammate: po pierwszym zadaniu czeka bezczynnie z ciepłym cache, a orkiestrator wysyła mu kolejne zadania przez `SendMessage`. Workery odsyłają krótkie raporty zamiast całych plików, więc kontekst orkiestratora zostaje mały. Gdy model próbuje odpalić drugiego workera tego samego typu, mod odmawia i wskazuje ciepłego. `!haiku …` / `!opus …` oddaje cały prompt workerowi.
+Worker zachowuje kontekst między zadaniami: kolejne zadanie orkiestrator wysyła mu przez `SendMessage` (zakończony worker wznawia pracę z tym, co wie). Workery same wykonują zadanie (nie mogą uruchamiać agentów) i odsyłają raport do 10 linii zamiast całych plików. Orkiestrator ma zlecać pracę tylko wtedy, gdy zajmie ona co najmniej 3 wywołania narzędzi, bo przekazanie i raport kosztują go dwa jego własne zapytania. Podpowiedź „oddaj workerowi” dostaje tylko przy zadaniach trudniejszych niż jego model. Gdy model odpala drugiego workera tego samego typu, mod odmawia i wskazuje istniejącego, chyba że ten urósł albo ostygł na tyle, że nowy wyjdzie taniej. `!haiku …` / `!opus …` oddaje cały prompt workerowi, a `!fable …` idzie do `worker-opus`. `/router off` wyłącza crew w tej sesji.
 
 Przetestowane na żywo: dwa zadania dla `worker-haiku` w jednej sesji uruchomiły jednego workera, drugie poszło przez `SendMessage`, a koszt Haiku wyniósł $0.0023.
 
@@ -67,7 +70,7 @@ Przetestowane na żywo: dwa zadania dla `worker-haiku` w jednej sesji uruchomił
 | `/router log` | ostatnie 50 decyzji jako JSON, do strojenia |
 | `/router reset` | wyczyść sumy, wyuczone profile tur i log |
 
-Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `enableFable`, effort per poziom, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
+Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `layaApiKey`, `enableFable`, effort per poziom, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
 
 ## Podziękowania
 

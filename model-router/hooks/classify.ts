@@ -42,6 +42,15 @@ const RULES: Rule[] = [
   ['sonnet', 1.5, re(String.raw`${S}(explain|wyjaśnij|wytłumacz|objaśnij|how does|jak działa)${E}`), 'explanation'],
   ['sonnet', 1, re(String.raw`${S}(fix|napraw|popraw)${E}`), 'fix'],
   ['sonnet', 1, re(String.raw`${S}(unit tests?|testy jednostkowe|regex|sql|bash script|skrypt bash)${E}`), 'routine code'],
+  // "Translate" said of code is a port between languages, not a translation of text.
+  [
+    'sonnet',
+    3,
+    re(
+      String.raw`${S}(translat${L}|przetłumacz${L}|port${L}|przepisz|rewrite|convert${L}|przekonwert${L})${E}[^"'“”„]{0,25}?(${S}(modules?|code|class(es)?|functions?|files?|programs?|services?|components?|librar${L}|kod${L}|moduł${L}|klas${L}|funkcj${L}|plik${L}|serwis${L}|bibliotek${L})${E}|${S}from (python|javascript|typescript|js|ts|go|golang|rust|java|kotlin|swift|ruby|php|c\+\+|c#|scala|elixir)${E})`,
+    ),
+    'code port',
+  ],
 
   // Unclear, deep or wide.
   [
@@ -52,8 +61,18 @@ const RULES: Rule[] = [
     ),
     'unexplained failure',
   ],
+  // A question about a failure is a diagnosis, however short: "what is causing the 500s?".
+  [
+    'opus',
+    2.5,
+    re(
+      String.raw`${S}(what('s| is| are)? (causing|wrong|breaking)|what causes|co powoduje|skąd (się )?(bierze|biorą)|co jest nie tak)${E}.{0,80}(${S}(errors?|bugs?|fail${L}|crash${L}|exceptions?|timeouts?|leak${L}|slow${L}|\d{3}s?|błęd${L}|błąd|awari${L}|wyjąt${L}|wolno|problem${L})${E})?`,
+    ),
+    'diagnosis',
+  ],
   ['opus', 2.5, re(String.raw`${S}(flaky|intermittent${L}|sporadyczn${L}|race condition|deadlock${L}|memory leak|wyciek${L} pamięci|heisenbug|regression|regresj${L})${E}`), 'hard bug'],
-  ['opus', 2, re(String.raw`${S}(architect${L}|architektur${L}|system design|zaprojektuj|trade-?offs?|kompromis${L})${E}`), 'architecture'],
+  ['opus', 2, re(String.raw`${S}(architect${L}|architektur${L}|system design|zaprojektuj|trade-?offs?|kompromis${L}|scal(e|es|ing|ability)|skalow${L})${E}`), 'architecture'],
+  ['opus', 1.5, re(String.raw`${S}(which|what) (of these|approach|design|option|architecture|pattern)${E}|${S}(które|który|która) (z tych|podejście|rozwiązanie)${E}`), 'choosing a design'],
   ['opus', 2, re(String.raw`${S}(security|bezpieczeństw${L}|audit${L}|audyt${L}|vulnerab${L}|podatno${L}|threat model|pentest${L})${E}`), 'security'],
   ['opus', 2, re(String.raw`${S}(performance|wydajno${L}|optimi[sz]${L}|zoptymalizuj|bottleneck${L}|wąskie gardło)${E}`), 'performance'],
   [
@@ -82,10 +101,13 @@ export function words(text: string): number {
   return t === '' ? 0 : t.split(/\s+/).length
 }
 
-/** A short reply that continues the work in progress ("ok", "dalej", "do it"): it keeps the current route. */
-export function isFollowUp(text: string): boolean {
+/**
+ * A short reply that continues the work in progress ("ok", "dalej", "do it"): it keeps the current route. A short
+ * prompt the rules do read ("debug flaky test", "rename foo bar") is a new task, not a follow-up.
+ */
+export function isFollowUp(text: string, enableFable = false): boolean {
   const n = words(text)
-  return n <= 3 || (n <= 8 && FOLLOW_UP.test(text))
+  return (n <= 8 && FOLLOW_UP.test(text)) || (n <= 3 && heuristic(text, enableFable) === undefined)
 }
 
 /** Scores a prompt locally, in microseconds and no tokens. Undefined when the signals are weak or conflict. */

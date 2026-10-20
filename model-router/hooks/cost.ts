@@ -3,12 +3,16 @@ import type { ModelUsage } from 'claude-code'
 import type { Ledger, Tier, Warm } from '../types'
 
 /** List prices in USD per million tokens: uncached input, output, cache read. */
-export type Price = { input: number; output: number; read: number }
+export type Card = { input: number; output: number; read: number }
+
+/** A model's prices: one card, and for some models a dearer one past a prompt size. */
+export type Price = Card & { long?: Card & { above: number } }
 
 // Anthropic first-party list prices (October 2026). Longest id first, so `claude-opus-5-5` wins over `claude-opus-5`.
+// Haiku 5.5 bills a prompt over 100K tokens at $0.50 / $2.50 (cache reads at the usual tenth of input).
 const PRICES: [string, Price][] = (
   [
-    ['claude-haiku-5-5', { input: 0.1, output: 0.5, read: 0.01 }],
+    ['claude-haiku-5-5', { input: 0.1, output: 0.5, read: 0.01, long: { above: 100_000, input: 0.5, output: 2.5, read: 0.05 } }],
     ['claude-sonnet-5-5', { input: 2, output: 10, read: 0.2 }],
     ['claude-opus-5-5', { input: 4, output: 20, read: 0.2 }],
     ['claude-fable-5-1', { input: 10, output: 50, read: 0.25 }],
@@ -41,16 +45,34 @@ export const CACHE: Record<'1h' | '5m', Cache> = {
   '5m': { write: 1.25, ttlMs: 5 * 60_000 },
 }
 
-/** One model's prompt cache, whatever variant of its id a request named (`claude-opus-5-5[1m]`). */
-export function cacheKey(model: string): string {
+/** One model's id, whatever variant a request named (`claude-opus-5-5[1m]`, `anthropic.claude-opus-5-5`, `opus`). */
+export function canonical(model: string): string {
   const id = model.toLowerCase().replace(/\[.*\]$/, '')
   return ALIASES[id] ?? id
 }
 
-/** The price of a model id (`claude-opus-5-5[1m]`, `anthropic.claude-opus-5-5`, `opus`), or undefined. */
+/**
+ * The prompt cache a request reads: one per model and effort. Caches belong to a model, and changing the
+ * request's top-level effort rebuilds the cached messages too.
+ */
+export function cacheKey(model: string, effort?: string | number): string {
+  return `${canonical(model)}@${effort ?? ''}`
+}
+
+/** The price of a model id, or undefined. */
 export function priceOf(model: string): Price | undefined {
-  const full = cacheKey(model)
+  const full = canonical(model)
   return PRICES.find(([key]) => full.includes(key))?.[1]
+}
+
+/** The card a prompt of this many tokens is billed by. */
+export function cardFor(p: Price, promptTokens: number): Card {
+  return p.long !== undefined && promptTokens > p.long.above ? p.long : p
+}
+
+/** Input tokens a request carried: uncached, written and read together. */
+export function promptOf(u: ModelUsage): number {
+  return u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
 }
 
 /** What one request cost, from its usage, or undefined for a model with no known price. */
@@ -59,49 +81,76 @@ export function usd(model: string, u: ModelUsage, cache: Cache = CACHE['1h']): n
   if (p === undefined) {
     return undefined
   }
-  return (u.input_tokens * p.input + u.cache_creation_input_tokens * p.input * cache.write + u.cache_read_input_tokens * p.read + u.output_tokens * p.output) / 1e6
+  const c = cardFor(p, promptOf(u))
+  return (u.input_tokens * c.input + u.cache_creation_input_tokens * c.input * cache.write + u.cache_read_input_tokens * c.read + u.output_tokens * c.output) / 1e6
 }
 
-/** A turn's expected shape: requests made, tokens written. */
-export type Profile = { steps: number; output: number }
-
-// Priors per task tier, replaced by what this person's turns actually look like (see `learn`).
-export const PROFILE: Record<Tier, Profile> = {
-  haiku: { steps: 2, output: 800 },
-  sonnet: { steps: 6, output: 3_000 },
-  opus: { steps: 14, output: 9_000 },
-  fable: { steps: 20, output: 15_000 },
-}
-
-/** Folds one finished turn into a tier's profile (exponential moving average). */
-export function learn(profile: Profile, steps: number, output: number): Profile {
-  const a = 0.2
-  return { steps: profile.steps * (1 - a) + steps * a, output: profile.output * (1 - a) + output * a }
+/** How many tokens of a prompt this cache entry still holds at `now`. */
+export function cachedOf(entry: { tokens: number; at: number } | undefined, prompt: number, now: number, cache: Cache): number {
+  return entry !== undefined && now - entry.at < cache.ttlMs ? Math.min(entry.tokens, prompt) : 0
 }
 
 /**
- * What a turn of this shape would cost on `model`, given what its prompt cache holds now.
- *
- * The first request writes whatever part of the context the model has not cached (or whose entry lapsed);
- * every request after reads the context from cache; the answer is paid at the output price.
+ * What a request of `prompt` tokens costs on `model` when its cache holds `cached` of them: the rest is written
+ * (Claude Code marks the cache at the end of every request), the cached part read, the answer paid as output.
  */
-export function turnCost(model: string, context: number, warm: Warm, now: number, profile: Profile, cache: Cache = CACHE['1h']): number | undefined {
+export function requestCost(model: string, prompt: number, cached: number, output: number, cache: Cache): number | undefined {
   const p = priceOf(model)
   if (p === undefined) {
     return undefined
   }
-  const entry = warm[cacheKey(model)]
-  const cached = entry !== undefined && now - entry.at < cache.ttlMs ? Math.min(entry.tokens, context) : 0
-  const cold = context - cached
-  const first = cold * p.input * cache.write + cached * p.read
-  const rest = Math.max(0, profile.steps - 1) * context * p.read
-  return (first + rest + profile.output * p.output) / 1e6
+  const c = cardFor(p, prompt)
+  return ((prompt - cached) * c.input * cache.write + cached * c.read + output * c.output) / 1e6
 }
 
+/** A turn's expected shape: requests made, tokens written, tokens the context grows by per request. */
+export type Profile = { steps: number; output: number; added: number }
+
+// Priors per task tier, replaced by what this person's turns actually look like (see `learn`).
+export const PROFILE: Record<Tier, Profile> = {
+  haiku: { steps: 2, output: 800, added: 3_000 },
+  sonnet: { steps: 6, output: 3_000, added: 6_000 },
+  opus: { steps: 14, output: 9_000, added: 8_000 },
+  fable: { steps: 20, output: 15_000, added: 8_000 },
+}
+
+/** Folds one finished turn into a tier's profile (exponential moving average). */
+export function learn(profile: Partial<Profile>, prior: Profile, steps: number, output: number, added?: number): Profile {
+  const a = 0.2
+  const mix = (old: number | undefined, fallback: number, now: number) => (old ?? fallback) * (1 - a) + now * a
+  return { steps: mix(profile.steps, prior.steps, steps), output: mix(profile.output, prior.output, output), added: added === undefined ? (profile.added ?? prior.added) : mix(profile.added, prior.added, added) }
+}
+
+/**
+ * What a turn of this shape would cost on `model` at `effort`, given what its prompt cache holds now.
+ *
+ * Request 1 writes whatever part of the context that cache lacks. Each later request reads the one before it
+ * from cache and writes what was added since (the last answer and the tool results). Each request is priced
+ * by its own size, so a model with a long-context rate pays it once the conversation passes the threshold.
+ */
+export function turnCost(model: string, effort: string | number | undefined, context: number, warm: Warm, now: number, profile: Profile, cache: Cache = CACHE['1h']): number | undefined {
+  const steps = Math.max(1, Math.round(profile.steps))
+  const outputPerStep = profile.output / steps
+  let total = 0
+  for (let i = 0; i < steps; i++) {
+    const prompt = context + i * profile.added
+    const cached = i === 0 ? cachedOf(warm[cacheKey(model, effort)], prompt, now, cache) : prompt - profile.added
+    const cost = requestCost(model, prompt, cached, outputPerStep, cache)
+    if (cost === undefined) {
+      return undefined
+    }
+    total += cost
+  }
+  return total
+}
+
+/** A route: the model and effort a request is sent with. */
+export type Target = { model: string; effort?: string | number }
+
 /** Turn cost on `to` minus turn cost on `from`: negative means switching saves money. Undefined when a price is unknown. */
-export function switchDelta(from: string, to: string, context: number, warm: Warm, now: number, profile: Profile, cache: Cache = CACHE['1h']): number | undefined {
-  const a = turnCost(from, context, warm, now, profile, cache)
-  const b = turnCost(to, context, warm, now, profile, cache)
+export function switchDelta(from: Target, to: Target, context: number, warm: Warm, now: number, profile: Profile, cache: Cache = CACHE['1h']): number | undefined {
+  const a = turnCost(from.model, from.effort, context, warm, now, profile, cache)
+  const b = turnCost(to.model, to.effort, context, warm, now, profile, cache)
   return a === undefined || b === undefined ? undefined : b - a
 }
 
@@ -138,7 +187,7 @@ export function addLedger(ledger: Ledger, delta: LedgerDelta): Ledger {
   return next
 }
 
-/** Money saved: routed steps' baseline minus their cost, minus what judging cost. */
+/** Money saved: what the session's own model would have charged, minus what was charged, minus judging. */
 export function saved(ledger: Ledger): number {
   return ledger.baselineUsd - ledger.actualUsd - ledger.judgeUsd
 }

@@ -14,11 +14,11 @@
 | | What it does | Where the tokens go |
 |---|---|---|
 | 🔀 **Route** | Sends each prompt to Haiku, Sonnet or Opus by what it needs. Local rules in English and Polish call clear prompts with no model call; only unclear ones go to a Haiku judge (about $0.0001 each). | Fewer Opus tokens |
-| 🧮 **Do the cache math** | Changing model throws away the prompt cache: the next request re-reads the whole conversation at write price. Before every switch the router prices the turn on both models with your actual context size and cache state, and switches only when it pays. | No switch costs more than it saves |
-| 🗜️ **Compress** | Bash output shrinks before it enters the conversation, rtk-style: no progress bars or passing tests, repeats folded into a count, every error kept. The full output is kept on disk. With [rtk](https://github.com/rtk-ai/rtk) installed, the commands it knows go through `rtk pipe`. | Less input on every later request |
+| 🧮 **Do the cache math** | Changing model throws away the prompt cache: the next request re-reads the whole conversation at write price. Before every move to a cheaper model the router prices the turn on both models with your actual context size and cache state, and moves only when it pays. | No downgrade costs more than it saves |
+| 🗜️ **Compress** | Bash output shrinks before it enters the conversation, rtk-style: no progress bars or passing tests, exact repeats folded into a count, every error kept. File contents, diffs and data pass untouched. The full output is kept on disk. With [rtk](https://github.com/rtk-ai/rtk) installed, the test and type-check runs it parses go through `rtk pipe`. | Less input on every later request |
 | ✂️ **Speak less** | One short system-prompt section asks for no preamble, recaps or closers, and for batched commands and partial file reads. `adhd` mode puts the next action first, after [i-have-adhd](https://github.com/ayghri/i-have-adhd). | Fewer output tokens, which cost 5× input |
 
-`/router` shows what it all saved, in dollars, for this session and all time.
+`/router` shows what routing saved in dollars and how many tokens compression kept out of the context, for this session and all time.
 
 ## Install
 
@@ -38,15 +38,16 @@ These are the router's own numbers, for a session on Claude Opus 5.5 with a warm
 
 | Context already cached | Opus → Sonnet for a routine task | Opus → Haiku for a quick task |
 |---:|---|---|
-| 40k tokens | **stays on Opus**: switching costs $0.12 more | **switches**: saves $0.023 |
-| 100k tokens | **stays on Opus**: switching costs $0.35 more | **switches**: saves $0.035 |
-| 400k tokens | **stays on Opus**: switching costs $1.49 more | **switches**: saves $0.092 |
+| 40k tokens | **stays on Opus**: a draw (+$0.002) | **switches**: saves $0.047 |
+| 100k tokens | **stays on Opus**: switching costs $0.23 more | **switches**: saves $0.051 |
+| 150k tokens | **stays on Opus**: switching costs $0.42 more | **stays on Opus**: Haiku's long-context rate makes it $0.063 more |
+| 400k tokens | **stays on Opus**: switching costs $1.37 more | **stays on Opus**: $0.23 more |
 
-Opus 5.5 and Sonnet 5.5 read cache at the same $0.20/MTok, so mid-session Sonnet saves only on output, and writing the conversation into its cache costs more than that. Haiku is 40× cheaper than Opus on input, so dropping to it pays even after the rewrite. When a model's cache has lapsed (an hour idle), both sides pay the write and the cheaper model wins. Going back to a model whose cache is still warm costs only what changed since.
+Opus 5.5 and Sonnet 5.5 read cache at the same $0.20/MTok, so mid-session Sonnet saves only on output, and writing the conversation into its cache costs more than that. Haiku 5.5 is 40× cheaper than Opus on input up to 100K tokens, so dropping to it pays even after the rewrite; past 100K it bills a long-context rate five times higher, and a warm Opus is cheaper again. When a model's cache has lapsed (an hour idle), both sides pay the write and the cheaper model wins. Going back to a model whose cache is still warm costs only what changed since. The cache also belongs to the request's effort, so on your own model the router keeps your `/effort` and never rebuilds the cache by changing it.
 
-Harder tasks are about quality, not money: by default the router moves up a tier when a prompt needs it, and shows what the switch cost. Set `escalate: suggest` to only name the tier in the status line and decide yourself.
+Harder tasks are about quality, not money: by default the router moves up a tier when a prompt needs it, and shows what the switch cost with the cache re-write. Set `escalate: suggest` to only name the tier in the status line and decide yourself. A `!tier` prefix always switches.
 
-The turn shape behind those numbers (requests per turn, tokens written) starts from priors per tier and learns from your own finished turns.
+The turn shape behind those numbers (requests per turn, tokens written, how much each request adds to the context) starts from priors per tier and learns from your own finished turns, filed under the tier of the task.
 
 ## How a prompt is routed
 
@@ -64,16 +65,19 @@ flowchart LR
     E -- no --> K
 ```
 
-- **Overrides:** start a prompt with `!haiku`, `!sonnet`, `!opus` (or `!fable`) to force it. The prefix is removed before the model sees the prompt.
+- **Overrides:** start a prompt with `!haiku`, `!sonnet`, `!opus` (or `!fable`) to force it. The prefix is removed before the model sees the prompt, also while routing is off.
+- **Follow-ups** ("ok", "dalej", "do it", or three words the rules don't read) keep the current model. A short prompt the rules do read ("debug flaky test") is routed like any other.
 - **`/model` wins:** change the model by hand and routing stops for the session. `/router on` resumes.
 - **Stuck detection:** three failed or identical tool calls in a row move the turn up one tier (or suggest it).
-- **Subagents** that name no model get the turn's cheaper tier. Forks and Opus turns leave them alone.
-- **Skills** (`/my-skill args`) are routed by the skill's expanded text, not just the command name.
-- **Effort** follows the tier: Haiku `low`, Sonnet `medium`, Opus `high`, Fable `xhigh`, each configurable.
+- **Subagents:** a general-purpose subagent that names no model gets the turn's cheaper tier. Other agent types may pin a model in their definition, so they, forks and Opus turns are left alone.
+- **Skills** (`/my-skill args`) are routed by what you typed and the command's own description, not by the skill's instructions. Claude Code's own prompt commands (`/code-review`, `/security-review`, `/init`) and MCP prompts run on your `/model`.
+- **Prompts typed during a turn** are routed when their own turn starts.
+- **Effort** follows the tier when the router moves you to another model: Haiku `low`, Sonnet `medium`, Opus `high`, Fable `xhigh`, each configurable. On your own model the request keeps your `/effort`.
+- **The engine's own fallback** (a refusal or an overload switching the model) pauses routing until the next prompt and does not count as a manual `/model`.
 
 ## Crew mode: one orchestrator, three warm workers
 
-Set `mode: crew` and no model is ever switched mid-session. The main session stays on one orchestrator model (Sonnet by default), so its prompt cache is never thrown away, and the work goes to long-lived workers:
+Set `mode: crew` and the main session stays on one orchestrator model (Sonnet by default). It moves there once, at the first prompt, and never again, so its prompt cache is never thrown away. Work that takes several tool calls goes to long-lived workers:
 
 | Worker | Model | Gets |
 |---|---|---|
@@ -81,11 +85,12 @@ Set `mode: crew` and no model is ever switched mid-session. The main session sta
 | `worker-sonnet` | Sonnet 5.5 | clear features and fixes, tests, refactors |
 | `worker-opus` | Opus 5.5 | unclear bugs, architecture, security and performance analysis |
 
-Each worker is a teammate: after its first task it idles with its own cache warm, and the orchestrator sends it the next task with `SendMessage`. Workers answer with a short report (paths, line numbers, what is open), never whole files or logs, so the orchestrator's context stays small.
+Each worker keeps its context between tasks: after its first task the orchestrator sends it the next one with `SendMessage` (a finished worker resumes where it was). Workers do the task themselves (they cannot start agents) and answer with a report of at most 10 lines: paths with line numbers, the command that checks it, what is open. The orchestrator is told to name files rather than paste them into a hand-off, never to read a worker's output file, and to do work of two tool calls or less itself, since a hand-off and a report cost two of its own requests.
 
-- The local rules still read every prompt; one that needs another model reaches the orchestrator with a one-line hint to hand it to that worker. `!haiku …` / `!opus …` delegate the whole prompt.
-- If the model tries to start a second worker of the same model, the mod refuses and names the warm one to message instead.
-- `/router` counts each worker request against what the session's own model would have charged for it.
+- The local rules still read every prompt. One that needs a **stronger** model than the orchestrator reaches it with a one-line hint to hand it over if it takes three or more tool calls. `!haiku …` / `!opus …` delegate the whole prompt; `!fable …` goes to `worker-opus`, as there is no Fable worker.
+- If the model starts a second worker of the same model, the mod refuses and names the one to message, unless the old worker's context has grown or gone cold enough that a fresh one is cheaper. A spawn under another name (`worker-opus-2`) always gets past a worker that stopped answering.
+- `/router off` turns crew off for the session: no crew section, no spawn checks.
+- `/router` counts each worker request against the same request on your own `/model`.
 
 Tested live: two tasks for `worker-haiku` in one session started one worker, reused it through `SendMessage`, and cost $0.0023 in Haiku tokens.
 
@@ -96,14 +101,14 @@ Tested live: two tasks for `worker-haiku` in one session started one worker, reu
 | `npm test` with 400 passing tests and 1 failure | the failure with its diff, the summary, `(400 passing test lines hidden)`: over 10× smaller |
 | `pnpm install`, `docker build`, `pip install` | progress bars and spinners gone, repeated warnings as one line `(×30)` |
 | `git push`, `git clone` | no `Counting/Compressing objects` lines |
-| a 2,000-line log | its head, its tail, and every error line from the middle |
-| `cat`, `sed -n`, `head`, `git diff`, `git show` | **untouched**: the model may quote it back into an edit |
+| a 2,000-line log | its head, its tail, and the error lines from the middle with the two lines after each (their location), up to 200 lines |
+| `cat`, `sed -n`, `head`, `grep`, `find`, `ls`, `git diff`/`show`/`log -p` (any spelling: `git -C dir`, `--no-pager`, `/bin/cat`, `bash -c`, `xargs cat`), `jq`, `curl`, `docker inspect`, `kubectl get` | **untouched**: file contents, diffs and data the model may quote back into an edit |
 
 Claude Code itself moves very large outputs to a file and shows a 2 KB preview; model-router works on the mid-size ones below that, which otherwise enter the context whole: typical test runs, installs and builds.
 
-Rules it never breaks: lines carrying an error are never folded or cut, output under 1,200 characters is left alone, a result that would shrink by less than 10% is passed through unchanged, and the whole output is saved under `~/.claude/model-router/tee/` (a ring of the last 200), with the path in the output so the model can `grep` it.
+Rules it never breaks: lines carrying an error are never dropped, folded or shortened; lines that only look alike are folded only in install and build logs; output under 1,200 characters is left alone; a result that would shrink by less than 10% once its note is added is passed through unchanged; and whatever a result no longer shows is saved whole under `~/.claude/model-router/tee/` (a ring of the last 200 compressed outputs), with the path in the output so the model can `grep` it.
 
-With [rtk](https://github.com/rtk-ai/rtk) on your PATH, single commands rtk has a parser for (`cargo test`, `pytest`, `tsc`, `vitest`, `mypy`, `prettier`, `phpunit`, `ctest`, `go build`, `grep`/`rg`, `find`/`fd`) go through `rtk pipe` instead. Nothing is rewritten, so your permission rules see the command you approved.
+With [rtk](https://github.com/rtk-ai/rtk) on your PATH, plain `cargo test`, `pytest`, `tsc`, `mypy` and `go build` runs go through `rtk pipe` instead (not `--collect-only`, `--showConfig`, `--help` and other modes that print something else). An rtk summary that drops the failures the output shows is refused. Nothing is rewritten, so your permission rules see the command you approved.
 
 ## Answer styles
 
@@ -119,7 +124,7 @@ With [rtk](https://github.com/rtk-ai/rtk) on your PATH, single commands rtk has 
 |---|---|
 | `/router` | route in force, savings this session and all time, switches vs. holds, compression totals |
 | `/router style terse\|adhd\|off` | answer style for this session |
-| `/router off` · `/router on` | stop or resume routing for this session |
+| `/router off` · `/router on` | stop or resume routing (or crew) for this session |
 | `/router log` | the last 50 routing decisions as JSON lines, for tuning |
 | `/router reset` | clear all-time totals, learned turn profiles and the log |
 
@@ -138,17 +143,18 @@ Shown when you install, and later under `/config`:
 | `compress` | `true` | Bash output compression |
 | `useRtk` | `true` | use `rtk pipe` when the rtk binary is installed |
 | `cacheTtl` | `1h` | `5m` if your setup writes 5-minute cache entries (1.25× instead of 2×) |
-| `judge` | `haiku` | `off`: local rules only, zero tokens; unclear prompts keep the current model |
+| `judge` | `haiku` | `off`: no Haiku judge; unclear prompts go to laya-serve when `layaUrl` is set, and otherwise keep the current model |
 | `layaUrl` | empty | a running [laya-serve](https://github.com/NandhaKishorM/laya) classifies unclear prompts locally, before the judge |
+| `layaApiKey` | empty | sent to laya-serve as a Bearer token |
 | `enableFable` | `false` | route proofs and new theories to Claude Fable 5.1 |
-| `haikuEffort` … `fableEffort` | `low` `medium` `high` `xhigh` | effort per tier |
+| `haikuEffort` … `fableEffort` | `low` `medium` `high` `xhigh` | effort per tier, when the router moves you to that model (on your own model your `/effort` stays) |
 | `showNote` | `true` | the line beneath each answer |
 
 Model ids per tier are at the top of [`model-router/hooks/register.ts`](model-router/hooks/register.ts). On Bedrock or Vertex, put your provider's ids there.
 
 ## FAQ
 
-**Is the "saved" figure real?** It is an estimate at list prices: each routed request's token counts priced on the model it ran on and on the model it would have run on, minus what the judge cost. Subscription plans don't bill per token, but the same tokens count against your usage limits.
+**Is the "saved" figure real?** It is an estimate at list prices, and it covers routing only (compression is reported in tokens kept out of the context, and the shorter answers are not measured). Every main-loop request is priced twice: as it ran, and as it would have run on your own `/model` with that model's own cache, as if every request had gone there. So a switch's cache write counts against the savings, and so does re-warming your model after a routed stretch. The judge's cost is subtracted too. Crew workers are compared with the same requests on your `/model`. Subscription plans don't bill per token, but the same tokens count against your usage limits.
 
 **Does compression break the prompt cache?** No. Output is shrunk once, before it is stored, so every later request sends the same small text and caches it normally.
 
@@ -166,7 +172,7 @@ Model ids per tier are at the top of [`model-router/hooks/register.ts`](model-ro
 
 ```bash
 claude plugin validate model-router
-claude plugin test model-router      # 53 tests: rules, cost model, compression, routing and crew end to end
+claude plugin test model-router      # 87 tests: rules, cost model, compression, routing and crew end to end
 claude --plugin-dir model-router     # try it in a session
 ```
 
