@@ -102,7 +102,7 @@ Tested live: two tasks for `worker-haiku` in one session started one worker, reu
 | `pnpm install`, `docker build`, `pip install` | progress bars and spinners gone, repeated warnings as one line `(×30)` |
 | `git push`, `git clone` | no `Counting/Compressing objects` lines |
 | a 2,000-line log | its head, its tail, and the error lines from the middle with the two lines after each (their location), up to 200 lines |
-| `cat`, `sed -n`, `head`, `grep`, `find`, `ls`, `git diff`/`show`/`log -p` (any spelling: `git -C dir`, `--no-pager`, `/bin/cat`, `bash -c`, `xargs cat`), `jq`, `curl`, `docker inspect`, `kubectl get` | **untouched**: file contents, diffs and data the model may quote back into an edit |
+| `cat`, `sed -n`, `head`, `grep`/`rg`, `git diff`/`show`/`log -p` (any spelling: `git -C dir`, `--no-pager`, `/bin/cat`, `bash -c`, `xargs cat`), `jq`, `curl`, `docker inspect`, `kubectl get` | **untouched**: file contents, diffs and data the model may quote back into an edit |
 
 Claude Code itself moves very large outputs to a file and shows a 2 KB preview; model-router works on the mid-size ones below that, which otherwise enter the context whole: typical test runs, installs and builds.
 

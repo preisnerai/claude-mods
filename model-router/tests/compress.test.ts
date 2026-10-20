@@ -14,7 +14,10 @@ test('file contents and diffs pass verbatim; tests and installs get their own fi
   expect(familyOf('cd api && pytest -q')).toBe('test')
   expect(familyOf('pnpm install')).toBe('install')
   expect(familyOf('docker compose build')).toBe('install')
-  expect(familyOf('ls -la')).toBeUndefined()
+  expect(familyOf('ls -la')).toBe('generic')
+  // A note printed after the run does not make the run's output verbatim.
+  expect(familyOf('npm test; echo "exit $?"')).toBe('test')
+  expect(familyOf('for i in $(seq 1 400); do echo "step $i"; done')).toBe('generic')
   expect(familyOf('make build')).toBe('generic')
 })
 

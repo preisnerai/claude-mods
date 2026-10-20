@@ -15,7 +15,9 @@ const LINE_CAP = 500
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g
 
 // Output the model may quote back into an Edit, or reads as data: passed through verbatim.
-const VERBATIM_COMMAND = /^(cat|tac|head|tail|sed|awk|gawk|less|more|bat|nl|xxd|od|hexdump|jq|yq|base64|diff|cut|column|tr|strings|grep|egrep|fgrep|rg|ag|ack|find|fd|ls|tree|stat|readlink|realpath|file|wc|env|printenv|echo|printf|cmp|patch)$/
+// Listings and short notes (ls, find, echo, wc) are not here: they hold nothing an Edit would quote, and a cut
+// of them is saved whole on disk. `npm test; echo "exit $?"` must still compress.
+const VERBATIM_COMMAND = /^(cat|tac|head|tail|sed|awk|gawk|less|more|bat|nl|xxd|od|hexdump|jq|yq|base64|diff|cut|column|tr|strings|grep|egrep|fgrep|rg|ag|ack|printenv|cmp|patch)$/
 const VERBATIM_LINE = [
   /^git\s+(show|diff|blame|cat-file|grep|format-patch|ls-files|ls-tree|config|remote|branch|tag|log\b.*(\s-p\b|\s--patch\b|\s--stat\b|\s--format|\s--pretty)|stash\s+show)/,
   /^gh\s+(pr|issue|run|api|release)\s+(diff|view|api|list)?/,
