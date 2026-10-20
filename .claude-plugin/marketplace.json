@@ -1,11 +1,12 @@
 {
   "name": "claude-mods",
   "owner": { "name": "preisnerai" },
+  "description": "Mods for Claude Code that spend fewer tokens.",
   "plugins": [
     {
       "name": "model-router",
       "source": "./model-router",
-      "description": "Routes each prompt to Haiku, Sonnet or Opus by how much capability it needs."
+      "description": "Cache-aware model routing, rtk-style output compression and terse answers. Shows the dollars saved."
     },
     {
       "name": "find-mod",
