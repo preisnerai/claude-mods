@@ -2,6 +2,12 @@
   "name": "find-mod",
   "version": "0.1.0",
   "description": "Wyszukiwarka modów do Claude Code na GitHubie: z opisu albo z kontekstu sesji, wybiera pasujący mod z największą liczbą gwiazdek.",
+  "author": {
+    "name": "preisnerai"
+  },
+  "homepage": "https://github.com/preisnerai/claude-mods/tree/main/find-mod",
+  "repository": "https://github.com/preisnerai/claude-mods",
+  "license": "MIT",
   "userConfig": {
     "autoStar": {
       "type": "string",
