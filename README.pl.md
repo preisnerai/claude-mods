@@ -49,6 +49,14 @@ Trudniejsze zadania to kwestia jakości, nie pieniędzy: domyślnie router podno
 
 Dodatkowo: ręczny `/model` wyłącza routing do końca sesji (`/router on` przywraca); trzy nieudane lub identyczne wywołania narzędzi z rzędu podnoszą poziom; subagenci bez wskazanego modelu dostają tańszy poziom tury; skille (`/mój-skill`) są kierowane po rozwiniętej treści.
 
+## Tryb crew: jeden orkiestrator, trzech ciepłych workerów
+
+Ustaw `mode: crew`, a model w sesji nigdy się nie zmienia. Sesja główna zostaje na jednym modelu-orkiestratorze (domyślnie Sonnet), więc jej cache nie przepada, a pracę wykonują trwałe workery: `worker-haiku` (szukanie, czytanie kodu, podsumowania, komendy), `worker-sonnet` (jasne funkcje, poprawki, testy) i `worker-opus` (trudne bugi, architektura, audyty).
+
+Każdy worker to teammate: po pierwszym zadaniu czeka bezczynnie z ciepłym cache, a orkiestrator wysyła mu kolejne zadania przez `SendMessage`. Workery odsyłają krótkie raporty zamiast całych plików, więc kontekst orkiestratora zostaje mały. Gdy model próbuje odpalić drugiego workera tego samego typu, mod odmawia i wskazuje ciepłego. `!haiku …` / `!opus …` oddaje cały prompt workerowi.
+
+Przetestowane na żywo: dwa zadania dla `worker-haiku` w jednej sesji uruchomiły jednego workera, drugie poszło przez `SendMessage`, a koszt Haiku wyniósł $0.0023.
+
 ## Komendy
 
 | | |
@@ -59,7 +67,7 @@ Dodatkowo: ręczny `/model` wyłącza routing do końca sesji (`/router on` przy
 | `/router log` | ostatnie 50 decyzji jako JSON, do strojenia |
 | `/router reset` | wyczyść sumy, wyuczone profile tur i log |
 
-Ustawienia (`escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `enableFable`, effort per poziom, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
+Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `enableFable`, effort per poziom, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
 
 ## Podziękowania
 

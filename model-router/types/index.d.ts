@@ -3,7 +3,7 @@ export type Tier = 'haiku' | 'sonnet' | 'opus' | 'fable'
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 /** How a tier was chosen: a local rule, the judge model, laya-serve, a `!tier` prefix, a short follow-up. */
-export type Source = 'rule' | 'judge' | 'laya' | 'forced' | 'follow-up' | 'escalated'
+export type Source = 'rule' | 'judge' | 'laya' | 'forced' | 'follow-up' | 'escalated' | 'crew'
 
 /** The model and effort the main loop runs on, and why. */
 export type Route = {

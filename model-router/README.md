@@ -14,6 +14,7 @@ Cache-aware model routing, rtk-style Bash output compression and terse answers f
 | `hooks/classify.ts` | local EN/PL rules, follow-up detection, the Haiku judge's rubric, the laya-serve question |
 | `hooks/cost.ts` | list prices, cache-aware turn cost, switch economics, the savings ledger |
 | `hooks/compress.ts` | rtk-lite: command families, noise and passing-test filters, folding, cutting, `rtk pipe` filters |
+| `hooks/crew.ts` | crew mode: worker definitions, the orchestrator's section, delegation hints |
 | `hooks/style.ts` | the `terse` and `adhd` system-prompt sections |
 | `types/index.d.ts` | the `$.state` contract |
 | `tests/` | `claude plugin test .` |

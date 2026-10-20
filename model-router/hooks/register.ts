@@ -7,6 +7,7 @@ import type { Verdict } from './classify'
 import { MIN_CHARS, compress, familyOf, rtkFilter } from './compress'
 import { CACHE, PROFILE, addLedger, cacheKey, dollars, emptyLedger, learn, saved, size, switchDelta, usd } from './cost'
 import type { Cache, LedgerDelta, Profile } from './cost'
+import { WORKERS, crewSection, delegationHint, tierOfWorker, workerName, workerSpec } from './crew'
 import { STYLE, isStyle } from './style'
 
 // Model per tier. Change the ids here to re-route.
@@ -46,6 +47,8 @@ const note = atom({ plugin: 'model-router', key: 'note' } as const, null)
 type $ = EngineInterface
 
 type Config = {
+  mode: 'route' | 'crew'
+  orchestrator: Tier
   cache: Cache
   effort: Record<Tier, Effort>
   enableFable: boolean
@@ -212,6 +215,21 @@ async function apply($: $, verdict: Verdict, cfg: Config) {
   }
 }
 
+/** Crew mode: the main loop stays on the orchestrator for the whole session, so its cache is never thrown away. */
+async function pinOrchestrator($: $, cfg: Config): Promise<Route> {
+  const t = cfg.orchestrator
+  const pinned: Route = { tier: t, model: MODEL[t], effort: cfg.effort[t], source: 'crew', confidence: 1 }
+  const current = await read($, route)
+  if (current?.source !== 'crew') {
+    await update($, route, () => pinned)
+    if ((await read($, sessionModel)) === null) {
+      const model = await $.session.model()
+      await update($, sessionModel, () => model)
+    }
+  }
+  return pinned
+}
+
 async function routePrompt($: $, text: string, cfg: Config) {
   const current = await read($, route)
   if (current !== null && isFollowUp(text)) {
@@ -230,6 +248,9 @@ async function routePrompt($: $, text: string, cfg: Config) {
   }
   await apply($, verdict, cfg)
 }
+
+// Crew workers by agent id: their steps are billed against the model the session would have done them on.
+const workers = new Set<string>()
 
 // Bash commands by tool_use_id, so their results can be compressed by what ran. Lost on reload: harmless.
 const commands = new Map<string, string>()
@@ -342,6 +363,8 @@ export const register: Register = (on, options) => {
   const base = String(options.layaUrl ?? '').trim().replace(/\/+$/, '')
   const key = String(options.layaApiKey ?? '')
   const cfg: Config = {
+    mode: pick(options.mode, ['route', 'crew'] as const, 'route'),
+    orchestrator: pick(options.orchestrator, ['haiku', 'sonnet', 'opus'] as const, 'sonnet'),
     cache: CACHE[pick(options.cacheTtl, ['1h', '5m'] as const, '1h')],
     effort: Object.fromEntries(ORDER.map(t => [t, pick(options[`${t}Effort`], EFFORTS, EFFORT[t])])) as Record<Tier, Effort>,
     enableFable: flag(options.enableFable, false),
@@ -361,6 +384,13 @@ export const register: Register = (on, options) => {
       ? $.process.run(['rtk', '--version'], { timeoutMs: 3_000 }).then(r => r.exitCode === 0 && /^rtk\s/.test(r.stdout)).catch(() => false)
       : Promise.resolve(false)
     await $.command.register({ name: 'router', description: 'model-router: savings, route, style (/router off|on|style|log|reset)' })
+    if (cfg.mode === 'crew') {
+      for (const t of WORKERS) {
+        try {
+          await $.agent.register(workerSpec(t, MODEL[t], cfg.effort[t]))
+        } catch {}
+      }
+    }
     return next(e)
   })
 
@@ -411,6 +441,23 @@ export const register: Register = (on, options) => {
     if (e.isMeta === true || (await read($, isManual))) {
       return next(e)
     }
+    if (cfg.mode === 'crew') {
+      // No model switch ever: a prompt that needs another model becomes a hint to hand it to that worker.
+      await pinOrchestrator($, cfg)
+      if (e.command !== undefined) {
+        return next(e)
+      }
+      const forced = FORCE.exec(e.text)
+      const tier = forced !== null ? ((forced[1] ?? 'opus').toLowerCase() as Tier) : heuristic(e.text, false)?.tier
+      const text = forced !== null ? e.text.slice(forced[0].length) : e.text
+      if (tier === undefined || (tier === cfg.orchestrator && forced === null) || !WORKERS.includes(tier)) {
+        return next({ ...e, text })
+      }
+      await update($, note, () => `model-router: crew · ${workerName(tier)}`)
+      await status($, `crew · ${NAME[cfg.orchestrator]} orchestrates · ${tier} task → ${workerName(tier)}`)
+      await log($, 'delegate', { tier, forced: forced !== null })
+      return next({ ...e, text, context: [...(e.context ?? []), delegationHint(tier, forced !== null)] })
+    }
     if (e.command !== undefined) {
       // A skill's text exists only once it expands: route it at skill.prompt, or at the first step.
       const name = e.command.name
@@ -443,7 +490,18 @@ export const register: Register = (on, options) => {
 
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) {
-      return yield* next(e)
+      const result = yield* next(e)
+      try {
+        const baseline = await read($, sessionModel)
+        if (workers.has(e.agentId) && result.usage !== null && baseline !== null) {
+          const actual = usd(result.usage.model || e.model, result.usage, cfg.cache)
+          const would = usd(baseline, result.usage, cfg.cache)
+          if (actual !== undefined && would !== undefined) {
+            await bill($, { routedSteps: 1, actualUsd: actual, baselineUsd: would })
+          }
+        }
+      } catch {}
+      return result
     }
     const typed = await read($, pending)
     if (typed !== null) {
@@ -518,6 +576,19 @@ export const register: Register = (on, options) => {
   // A subagent that names no model takes the turn's cheaper tier. A complex turn leaves subagents on their own
   // default, and a fork inherits the parent, so both pass through.
   on('agent.spawn', async ($, e, next) => {
+    const worker = cfg.mode === 'crew' && e.resume === undefined ? tierOfWorker(e.subagentType) : undefined
+    if (worker !== undefined) {
+      // One worker per model: a second would start with a cold cache. Point the model at the one that is warm.
+      const live = (await $.agent.list()).find(a => a.type === e.subagentType && (a.status === 'idle' || a.status === 'running' || a.status === 'waiting' || a.status === 'pending'))
+      if (live !== undefined) {
+        return { deny: `${workerName(worker)} is already running as ${live.teammateId ?? live.id}: send it this task with SendMessage to that name, so it keeps its warm cache.` }
+      }
+      const started = await next({ ...e, model: MODEL[worker] })
+      if (started.agentId !== undefined) {
+        workers.add(started.agentId)
+      }
+      return started
+    }
     const r = await read($, route)
     if (r === null || rank(r.tier) >= rank('opus') || e.subagentType === 'fork' || e.model !== undefined) {
       return next(e)
@@ -543,7 +614,9 @@ export const register: Register = (on, options) => {
         if (n >= STRIKES && up !== undefined && (up !== 'fable' || cfg.enableFable) && !(await read($, hasEscalated))) {
           await update($, hasEscalated, () => true)
           const reason = failed ? 'tools keep failing' : 'going in circles'
-          if (cfg.escalate === 'auto') {
+          if (cfg.mode === 'crew') {
+            await status($, `${reason}: hand it to ${workerName(up)}`)
+          } else if (cfg.escalate === 'auto') {
             await update($, route, () => ({ tier: up, model: MODEL[up], effort: cfg.effort[up], source: 'escalated', confidence: 1 }))
             await update($, note, () => `model-router: escalated to ${NAME[up]} · ${reason}`)
             await bill($, { switches: 1 })
@@ -589,10 +662,17 @@ export const register: Register = (on, options) => {
   // Output economy: one section at the end of the system prompt, inside the prompt cache.
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
-    const text = STYLE[(await read($, style)) ?? cfg.style]
-    if (text === undefined || e.traits.includes('bare')) {
+    if (e.traits.includes('bare')) {
       return composed
     }
-    return { sections: [...composed.sections, { id: 'model-router:style', text, scope: 'session' as const }] }
+    const added = []
+    const text = STYLE[(await read($, style)) ?? cfg.style]
+    if (text !== undefined) {
+      added.push({ id: 'model-router:style', text, scope: 'session' as const })
+    }
+    if (cfg.mode === 'crew' && !e.traits.includes('teammate')) {
+      added.push({ id: 'model-router:crew', text: crewSection(cfg.orchestrator, WORKERS), scope: 'session' as const })
+    }
+    return added.length === 0 ? composed : { sections: [...composed.sections, ...added] }
   })
 }

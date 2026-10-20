@@ -71,6 +71,24 @@ flowchart LR
 - **Skills** (`/my-skill args`) are routed by the skill's expanded text, not just the command name.
 - **Effort** follows the tier: Haiku `low`, Sonnet `medium`, Opus `high`, Fable `xhigh`, each configurable.
 
+## Crew mode: one orchestrator, three warm workers
+
+Set `mode: crew` and no model is ever switched mid-session. The main session stays on one orchestrator model (Sonnet by default), so its prompt cache is never thrown away, and the work goes to long-lived workers:
+
+| Worker | Model | Gets |
+|---|---|---|
+| `worker-haiku` | Haiku 5.5 | searching and reading code, summaries, running commands, mechanical edits |
+| `worker-sonnet` | Sonnet 5.5 | clear features and fixes, tests, refactors |
+| `worker-opus` | Opus 5.5 | unclear bugs, architecture, security and performance analysis |
+
+Each worker is a teammate: after its first task it idles with its own cache warm, and the orchestrator sends it the next task with `SendMessage`. Workers answer with a short report (paths, line numbers, what is open), never whole files or logs, so the orchestrator's context stays small.
+
+- The local rules still read every prompt; one that needs another model reaches the orchestrator with a one-line hint to hand it to that worker. `!haiku …` / `!opus …` delegate the whole prompt.
+- If the model tries to start a second worker of the same model, the mod refuses and names the warm one to message instead.
+- `/router` counts each worker request against what the session's own model would have charged for it.
+
+Tested live: two tasks for `worker-haiku` in one session started one worker, reused it through `SendMessage`, and cost $0.0023 in Haiku tokens.
+
 ## Bash output compression
 
 | Output | What the model gets |
@@ -113,6 +131,8 @@ Shown when you install, and later under `/config`:
 
 | Setting | Default | |
 |---|---|---|
+| `mode` | `route` | `crew`: orchestrator plus warm workers, no model switches |
+| `orchestrator` | `sonnet` | the main session's model in crew mode |
 | `escalate` | `auto` | `suggest`: only name a harder tier in the status line |
 | `style` | `terse` | `adhd`, `off` |
 | `compress` | `true` | Bash output compression |
@@ -146,7 +166,7 @@ Model ids per tier are at the top of [`model-router/hooks/register.ts`](model-ro
 
 ```bash
 claude plugin validate model-router
-claude plugin test model-router      # 46 tests: rules, cost model, compression, routing end to end
+claude plugin test model-router      # 53 tests: rules, cost model, compression, routing and crew end to end
 claude --plugin-dir model-router     # try it in a session
 ```
 
