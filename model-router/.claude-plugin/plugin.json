@@ -1,0 +1,5 @@
+{
+  "name": "model-router",
+  "version": "0.1.0",
+  "description": "Routes each prompt to Haiku, Sonnet or Opus by how much capability it needs, so simple tasks stop spending Opus tokens."
+}
