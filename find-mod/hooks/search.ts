@@ -238,7 +238,7 @@ export function format(found: Found): string {
   if (found.best !== undefined) {
     out.push(`Najlepszy wybór (pasuje do opisu, najwięcej gwiazdek spośród ${1 + found.others.length} pasujących):`)
     out.push(line(found.best))
-    out.push(`   Instalacja: /plugin marketplace add ${found.best.fullName}`)
+    out.push(`   Instalacja (najpierw podgląd): /find-mod install ${found.best.fullName}`)
     if (found.others.length > 0) out.push('', 'Inne pasujące:', ...found.others.map(line))
   } else if (found.loose.length > 0) {
     out.push('Nic nie pasuje dokładnie. Najbliżej (luźno związane):', ...found.loose.map(line))

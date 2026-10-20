@@ -1,5 +1,18 @@
 {
   "name": "find-mod",
   "version": "0.1.0",
-  "description": "Wyszukiwarka modów do Claude Code na GitHubie: z opisu albo z kontekstu sesji, wybiera pasujący mod z największą liczbą gwiazdek."
+  "description": "Wyszukiwarka modów do Claude Code na GitHubie: z opisu albo z kontekstu sesji, wybiera pasujący mod z największą liczbą gwiazdek.",
+  "userConfig": {
+    "autoStar": {
+      "type": "string",
+      "title": "Gwiazdka po instalacji",
+      "description": "ask: po instalacji pyta, czy zostawić autorowi gwiazdkę. always: zostawia ją sama po każdej instalacji. never: nigdy.",
+      "default": "ask",
+      "options": [
+        "ask",
+        "always",
+        "never"
+      ]
+    }
+  }
 }

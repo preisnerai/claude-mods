@@ -1,0 +1,16 @@
+{
+  "name": "claude-mods",
+  "owner": { "name": "preisnerai" },
+  "plugins": [
+    {
+      "name": "model-router",
+      "source": "./model-router",
+      "description": "Routes each prompt to Haiku, Sonnet or Opus by how much capability it needs."
+    },
+    {
+      "name": "find-mod",
+      "source": "./find-mod",
+      "description": "Wyszukiwarka modów do Claude Code na GitHubie: z opisu albo z kontekstu sesji."
+    }
+  ]
+}
