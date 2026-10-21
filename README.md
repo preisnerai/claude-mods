@@ -27,10 +27,11 @@ A **Model router** pane (beside the chat in the desktop app) shows the current m
 At the prompt of a Claude Code terminal session:
 
 ```
-/plugin install model-router --marketplace preisnerai/claude-mods
+/plugin marketplace add preisnerai/claude-mods
+/plugin install model-router@claude-mods
 ```
 
-Answer `y` to add the marketplace, then pick a scope. That's it: no server, no binary, no API key. From a shell: `claude plugin install model-router --marketplace preisnerai/claude-mods`. In the desktop app: **+** next to the prompt box → Plugins → Add marketplace `preisnerai/claude-mods` → Add plugin.
+That's it: no server, no binary, no API key. From a shell: `claude plugin marketplace add preisnerai/claude-mods`, then `claude plugin install model-router@claude-mods`. In the desktop app: **+** next to the prompt box → Plugins → Add marketplace `preisnerai/claude-mods` → Add plugin.
 
 ## Why cache-aware routing matters
 
@@ -167,7 +168,7 @@ Model ids per tier are at the top of [`model-router/hooks/register.ts`](model-ro
 
 ## More mods in this repo
 
-**[find-mod](find-mod)** (0.1, early): finds Claude Code mods on GitHub. `/find-mod what you need` searches the `claude-mod`, `claude-code-mod` and `claude-code-plugin` topics, has Haiku rate each match, and picks the best match with the most stars. `/find-mod install owner/repo` previews first and installs only with `--yes`. Install it with `/plugin install find-mod --marketplace preisnerai/claude-mods`. Details in [Polish](README.pl.md#find-mod).
+**[find-mod](find-mod)** (0.1, early): finds Claude Code mods on GitHub. `/find-mod what you need` searches the `claude-mod`, `claude-code-mod` and `claude-code-plugin` topics, has Haiku rate each match, and picks the best match with the most stars. `/find-mod install owner/repo` previews first and installs only with `--yes`. Install it with `/plugin marketplace add preisnerai/claude-mods`, then `/plugin install find-mod@claude-mods`. Details in [Polish](README.pl.md#find-mod).
 
 To make your own mod findable: add the `claude-mod` topic and a `.claude-plugin/marketplace.json` to its repository.
 

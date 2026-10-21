@@ -4,6 +4,7 @@ import { afterInstall, installMod, parseAutoStar, parseTarget, pickPlugin, previ
 import type { Get } from './search'
 
 const MARKET = {
+  name: 'top-mods',
   plugins: [
     { name: 'token-saver', description: 'Saves tokens' },
     { name: 'other', description: 'Other' },
@@ -29,12 +30,13 @@ test('targets: owner/repo, :plugin, github url; anything unsafe is refused', () 
 test('the catalog drops unsafe plugin names and needs one plugin or a chosen one', async () => {
   const catalog = await readCatalog(getOk, t)
   if ('problem' in catalog) throw new Error(catalog.problem)
+  expect(catalog.marketplace).toBe('top-mods')
   expect(catalog.plugins.map(p => p.name)).toEqual(['token-saver', 'other'])
 
   expect('problem' in pickPlugin(catalog, t)).toBe(true)
   expect(pickPlugin(catalog, { ...t, plugin: 'other' })).toEqual({ name: 'other' })
   expect('problem' in pickPlugin(catalog, { ...t, plugin: 'nope' })).toBe(true)
-  expect(pickPlugin({ plugins: [catalog.plugins[0]] }, t)).toEqual({ name: 'token-saver' })
+  expect(pickPlugin({ ...catalog, plugins: [catalog.plugins[0]] }, t)).toEqual({ name: 'token-saver' })
 })
 
 test('a repo without marketplace.json says it cannot be installed automatically', async () => {
@@ -42,21 +44,45 @@ test('a repo without marketplace.json says it cannot be installed automatically'
   expect('problem' in none && none.problem).toContain('marketplace.json')
 })
 
+test('a marketplace.json without a usable name is refused', async () => {
+  const nameless = await readCatalog(async () => ({ status: 200, ok: true, text: JSON.stringify({ plugins: MARKET.plugins }) }), t)
+  expect('problem' in nameless && nameless.problem).toContain('name')
+})
+
 test('the preview installs nothing and shows the confirmation command', () => {
-  const text = previewText({ ...t, plugin: 'token-saver' }, { plugins: [{ name: 'token-saver', description: 'Saves tokens' }] }, 'token-saver')
+  const text = previewText({ ...t, plugin: 'token-saver' }, { marketplace: 'top-mods', plugins: [{ name: 'token-saver', description: 'Saves tokens' }] }, 'token-saver')
   expect(text).toContain('/find-mod install top/mods:token-saver --yes')
   expect(text).toContain('przejrzyj repozytorium')
 })
 
-test('install runs claude with an argument vector, no shell', async () => {
+test('install adds the marketplace, then installs plugin@marketplace, as argument vectors, no shell', async () => {
   calls.length = 0
-  const done = await installMod(runOk, t, 'token-saver')
+  const done = await installMod(runOk, t, 'token-saver', 'top-mods')
   expect(done.ok).toBe(true)
-  expect(calls[0]).toEqual(['claude', 'plugin', 'install', 'token-saver', '--marketplace', 'top/mods', '--json'])
+  expect(calls).toEqual([
+    ['claude', 'plugin', 'marketplace', 'add', 'top/mods'],
+    ['claude', 'plugin', 'install', 'token-saver@top-mods', '--yes'],
+  ])
 
-  const failed = await installMod(async () => ({ exitCode: 1, stdout: '', stderr: 'Plugin "x" not found' }), t, 'x')
+  const failed = await installMod(
+    async argv => ({ exitCode: argv[2] === 'install' ? 1 : 0, stdout: '', stderr: 'Plugin "x" not found' }),
+    t,
+    'x',
+    'top-mods',
+  )
   expect(failed.ok).toBe(false)
   expect(failed.text).toContain('not found')
+
+  calls.length = 0
+  const noMarket = await installMod(
+    async argv => (calls.push(argv), { exitCode: 1, stdout: '', stderr: 'Failed to clone' }),
+    t,
+    'x',
+    'top-mods',
+  )
+  expect(noMarket.ok).toBe(false)
+  expect(noMarket.text).toContain('Failed to clone')
+  expect(calls).toHaveLength(1)
 })
 
 test('the star follows autoStar: ask only proposes, never only stays silent, always stars', async () => {

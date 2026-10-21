@@ -3,7 +3,8 @@
 Cache-aware model routing, rtk-style Bash output compression and terse answers for Claude Code. Full documentation: [the repository README](../README.md) ([po polsku](../README.pl.md)).
 
 ```
-/plugin install model-router --marketplace preisnerai/claude-mods
+/plugin marketplace add preisnerai/claude-mods
+/plugin install model-router@claude-mods
 ```
 
 ## Layout
