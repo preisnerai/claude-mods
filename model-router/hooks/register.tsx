@@ -53,6 +53,7 @@ const style = atom({ plugin: 'model-router', key: 'style' } as const, null)
 const ledger = atom({ plugin: 'model-router', key: 'ledger' } as const, emptyLedger())
 const workers = atom({ plugin: 'model-router', key: 'workers' } as const, [])
 const workerWarm = atom({ plugin: 'model-router', key: 'workerWarm' } as const, {})
+const paneAsked = atom({ plugin: 'model-router', key: 'paneAsked' } as const, false)
 const note = atom({ plugin: 'model-router', key: 'note' } as const, null)
 
 type $ = EngineInterface
@@ -524,7 +525,7 @@ export const register: Register = (on, options) => {
     rtk = cfg.compress && cfg.useRtk
       ? $.process.run(['rtk', '--version'], { timeoutMs: 3_000 }).then(r => r.exitCode === 0 && /^rtk\s/.test(r.stdout)).catch(() => false)
       : Promise.resolve(false)
-    await $.command.register({ name: 'router', description: 'model-router: savings, route, style (/router off|on|style|log|reset)' })
+    await $.command.register({ name: 'router', description: 'model-router: savings, route, style (/router panel|off|on|style|log|reset)' })
     $.ui.open({ id: PANE, title: 'Model router' }).catch(() => {})
     if (cfg.mode === 'crew') {
       for (const t of WORKERS) {
@@ -561,6 +562,10 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'router' }, async ($, e) => {
     const [sub = '', arg = ''] = e.args.trim().toLowerCase().split(/\s+/)
+    if (sub === 'panel') {
+      const opened = await $.ui.open({ id: PANE, title: 'Model router' })
+      return { text: opened.isPlaced ? 'Model router pane opened.' : `The pane could not open here: ${opened.reason}` }
+    }
     if (sub === 'off') {
       await update($, isManual, () => true)
       await update($, route, () => null)
@@ -607,6 +612,11 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     if (e.isMeta === true) {
       return next(e)
+    }
+    // Opened at start the pane waits for a wide window; a prompt the person entered places it at any width, once.
+    if (!(await read($, paneAsked))) {
+      await update($, paneAsked, () => true)
+      $.ui.open({ id: PANE, title: 'Model router' }).catch(() => {})
     }
     if (await read($, isManual)) {
       // Routing is off: a !tier prefix is still not meant for the model.

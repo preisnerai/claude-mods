@@ -125,6 +125,7 @@ With [rtk](https://github.com/rtk-ai/rtk) on your PATH, plain `cargo test`, `pyt
 | | |
 |---|---|
 | `/router` | route in force, savings this session and all time, switches vs. holds, compression totals |
+| `/router panel` | open the live pane |
 | `/router style terse\|adhd\|off` | answer style for this session |
 | `/router off` · `/router on` | stop or resume routing (or crew) for this session |
 | `/router log` | the last 50 routing decisions as JSON lines, for tuning |

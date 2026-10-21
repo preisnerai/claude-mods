@@ -88,6 +88,7 @@ declare module 'claude-code' {
       workerWarm: Record<string, { tokens: number; at: number; first: number }>
       /** The line shown beneath the turn's answer. */
       note: string | null
+      paneAsked: boolean
     }
   }
 }
