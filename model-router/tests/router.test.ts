@@ -86,7 +86,7 @@ async function step($: Engine, agentId?: string, model = 'claude-opus-5-5') {
   }
 }
 
-test('a clear prompt routes by the local rules, with no judge call', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('a clear prompt routes by the local rules, with no judge call', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -97,7 +97,7 @@ test('a clear prompt routes by the local rules, with no judge call', { options: 
   expect(w.sent).toEqual([{ model: 'claude-haiku-5-5', effort: 'low' }])
 })
 
-test('an unclear prompt asks the Haiku judge', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('an unclear prompt asks the Haiku judge', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on, { judge: 'SONNET' })
   await start($)
 
@@ -120,7 +120,7 @@ test('with the judge off, an unclear prompt keeps /model', { options: { mode: 'r
   expect(w.sent).toEqual([{ model: 'claude-opus-5-5', effort: 'xhigh' }])
 })
 
-test('a session on a variant of the routed tier keeps its own id', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('a session on a variant of the routed tier keeps its own id', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on, { model: 'claude-opus-5-5[1m]' })
   await start($)
 
@@ -160,7 +160,7 @@ test('an unsure laya-serve hands the prompt to the judge', { options: { mode: 'r
   expect(w.sent).toEqual([{ model: 'claude-sonnet-5-5', effort: 'medium' }])
 })
 
-test('a !tier prefix forces the model and is stripped', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('a !tier prefix forces the model and is stripped', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -171,7 +171,7 @@ test('a !tier prefix forces the model and is stripped', { options: { mode: 'rout
   expect(w.sent).toEqual([{ model: 'claude-opus-5-5', effort: 'xhigh' }])
 })
 
-test('a short follow-up keeps the route, an easy task on a short context drops to Haiku', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('a short follow-up keeps the route, an easy task on a short context drops to Haiku', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -188,7 +188,7 @@ test('a short follow-up keeps the route, an easy task on a short context drops t
   expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5', 'claude-opus-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'])
 })
 
-test('Opus does not drop to Sonnet when the cached conversation is worth more than the switch saves', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('Opus does not drop to Sonnet when the cached conversation is worth more than the switch saves', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -205,7 +205,7 @@ test('Opus does not drop to Sonnet when the cached conversation is worth more th
   expect(report.text).toContain('switches / holds | 0 / 1')
 })
 
-test('once the cache has lapsed, the same switch goes through', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('once the cache has lapsed, the same switch goes through', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -219,7 +219,7 @@ test('once the cache has lapsed, the same switch goes through', { options: { mod
   expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5'])
 })
 
-test('/clear keeps only the system prompt cached, so a long conversation no longer holds a quick task back', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('/clear keeps only the system prompt cached, so a long conversation no longer holds a quick task back', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   await start($)
@@ -253,7 +253,7 @@ test('with 5-minute cache entries, ten idle minutes are enough to lapse it', { o
   expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5'])
 })
 
-test('a harder task escalates under escalate: auto', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('a harder task escalates under escalate: auto', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
   await submit($, 'Fix the typo "recieve" everywhere in the repo')
@@ -276,7 +276,7 @@ test('suggest mode leaves the model and names the tier', { options: { mode: 'rou
   expect(w.statuses.at(-1)).toContain('consider !opus')
 })
 
-test('/model by hand turns routing off until /router on', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('/model by hand turns routing off until /router on', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -295,7 +295,7 @@ test('/model by hand turns routing off until /router on', { options: { mode: 'ro
   expect(w.sent.at(-1)?.model).toBe('claude-haiku-5-5')
 })
 
-test('a cheap turn hands its model to general-purpose subagents; agent types that may pin a model are left alone', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('a cheap turn hands its model to general-purpose subagents; agent types that may pin a model are left alone', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   on('agent.spawn', ($, e) => ({ agentId: 'a1', model: e.model ?? e.parentModel }))
   await start($)
@@ -315,7 +315,7 @@ test('a cheap turn hands its model to general-purpose subagents; agent types tha
   expect((pinned as { model?: string }).model).toBe('claude-opus-5-5')
 })
 
-test('three failing tool calls in a row escalate one tier for the rest of the turn', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('three failing tool calls in a row escalate one tier for the rest of the turn', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   on('tool.call', () => ({ isError: true, result: 'boom', text: 'boom' }))
   await start($)
@@ -331,7 +331,7 @@ test('three failing tool calls in a row escalate one tier for the rest of the tu
   expect(w.statuses.at(-1)).toContain('tools keep failing → Opus')
 })
 
-test('Bash output is compressed before it is stored, and kept whole on disk', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('Bash output is compressed before it is stored, and kept whole on disk', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
   await start($)
@@ -356,7 +356,7 @@ test('Bash output is compressed before it is stored, and kept whole on disk', { 
   expect(report.text).toContain('bash output | 1×')
 })
 
-test('file contents read through Bash reach the model verbatim', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('file contents read through Bash reach the model verbatim', { options: { mode: 'route' } }, async ($, on) => {
   world(on)
   on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
   await start($)
@@ -372,7 +372,7 @@ test('file contents read through Bash reach the model verbatim', { options: { mo
   expect(storedText(stored as Stored)).toBe(raw)
 })
 
-test("Claude Code's own preview of a huge output is left as it is", { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test("Claude Code's own preview of a huge output is left as it is", { options: { mode: 'route' } }, async ($, on) => {
   world(on)
   on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
   await start($)
@@ -388,7 +388,7 @@ test("Claude Code's own preview of a huge output is left as it is", { options: {
   expect(storedText(stored as Stored)).toBe(raw)
 })
 
-test('the answer style is one section at the end of the system prompt', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('the answer style is one section at the end of the system prompt', { options: { mode: 'route' } }, async ($, on) => {
   world(on)
   on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' }] }))
   await start($)
@@ -404,7 +404,7 @@ test('the answer style is one section at the end of the system prompt', { option
   expect((await $.prompt.compose(COMPOSE)).sections.map(s => s.id)).toEqual(['intro'])
 })
 
-test('/router reports savings against the model each step would have run on', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('/router reports savings against the model each step would have run on', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -429,7 +429,7 @@ test('escalate: suggest holds even on the first prompt, when nothing is cached y
   expect(w.statuses.at(-1)).toContain('consider !opus')
 })
 
-test('a skill is routed by what was typed and what the command says it does, not by its instructions', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('a skill is routed by what was typed and what the command says it does, not by its instructions', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on, { judge: 'HAIKU', commands: [{ name: 'pdf', description: 'Merge, split and rotate PDF files', source: 'user' }] })
   await start($)
 
@@ -441,7 +441,7 @@ test('a skill is routed by what was typed and what the command says it does, not
   expect(w.sent.map(s => s.model)).toEqual(['claude-haiku-5-5'])
 })
 
-test('a prompt typed during a turn is routed when its own turn starts', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('a prompt typed during a turn is routed when its own turn starts', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -454,7 +454,7 @@ test('a prompt typed during a turn is routed when its own turn starts', { option
   expect(w.sent.map(s => s.model)).toEqual(['claude-haiku-5-5', 'claude-opus-5-5'])
 })
 
-test('the engine falling back to another model pauses routing; /model by hand stops it', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('the engine falling back to another model pauses routing; /model by hand stops it', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
   const fields = { from_model: 'claude-opus-5-5', requested_model: null, context_tokens: 0, prompt_cache_warm: false, cache_ttl: '1h', estimated_cache_write_usd: 0 }
@@ -475,7 +475,7 @@ test('the engine falling back to another model pauses routing; /model by hand st
   expect(w.sent.map(s => s.model)).toEqual(['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5-5'])
 })
 
-test('/resume forgets the other conversation: its cache, its route, its /model', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('/resume forgets the other conversation: its cache, its route, its /model', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   await start($)
@@ -493,7 +493,7 @@ test('/resume forgets the other conversation: its cache, its route, its /model',
   expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'])
 })
 
-test('a compaction leaves the context its summary measures', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('a compaction leaves the context its summary measures', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }], tokensAfter: 20_000 }) as never)
   await start($)
@@ -510,7 +510,7 @@ test('a compaction leaves the context its summary measures', { options: { mode: 
   expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'])
 })
 
-test('changing the style re-writes every cache, so a switch held for the cache goes through', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('changing the style re-writes every cache, so a switch held for the cache goes through', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -526,7 +526,7 @@ test('changing the style re-writes every cache, so a switch held for the cache g
   expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5', 'claude-opus-5-5', 'claude-sonnet-5-5'])
 })
 
-test("savings count a switch's own cache write: measured against the session model's warm cache", { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test("savings count a switch's own cache write: measured against the session model's warm cache", { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -545,7 +545,7 @@ test("savings count a switch's own cache write: measured against the session mod
   expect(report.text).toContain(`saved vs claude-opus-5-5 | ≈$${(baseline - actual).toFixed(3)}`)
 })
 
-test('two results stored at once get two tee files, and a result saving under 10% with its note goes as it came', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('two results stored at once get two tee files, and a result saving under 10% with its note goes as it came', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
   await start($)
@@ -565,7 +565,7 @@ test('two results stored at once get two tee files, and a result saving under 10
   expect(storedText(stored as Stored)).toBe(small)
 })
 
-test("Claude Code's own prompt commands run on your /model, not on the last prompt's cheaper tier", { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test("Claude Code's own prompt commands run on your /model, not on the last prompt's cheaper tier", { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on, { commands: [{ name: 'code-review', description: 'Review the current diff', source: 'builtin' }] })
   await start($)
 
@@ -580,7 +580,7 @@ test("Claude Code's own prompt commands run on your /model, not on the last prom
   ])
 })
 
-test('results stored at the same moment are all counted in the all-time totals', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('results stored at the same moment are all counted in the all-time totals', { options: { mode: 'route' } }, async ($, on) => {
   world(on)
   on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
   await start($)
@@ -596,7 +596,7 @@ test('results stored at the same moment are all counted in the all-time totals',
   expect(report.text).toMatch(/\| bash output \| 4× .* \| 4× /)
 })
 
-test('a short prompt the rules read is a new task, not a follow-up', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('a short prompt the rules read is a new task, not a follow-up', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -608,7 +608,7 @@ test('a short prompt the rules read is a new task, not a follow-up', { options: 
   expect(w.sent.map(s => s.model)).toEqual(['claude-haiku-5-5', 'claude-opus-5-5'])
 })
 
-test('with routing off a !tier prefix is removed and the status says it was ignored', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('with routing off a !tier prefix is removed and the status says it was ignored', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -621,7 +621,7 @@ test('with routing off a !tier prefix is removed and the status says it was igno
   expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5'])
 })
 
-test('a judge that gives no answer leaves the prompt on /model and says why in the log', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('a judge that gives no answer leaves the prompt on /model and says why in the log', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on, { judgeFails: true })
   await start($)
 
@@ -647,7 +647,7 @@ test('a laya-serve that hangs is given four seconds, then the judge decides', { 
   expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5'])
 })
 
-test('a result made of text blocks is compressed as blocks', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('a result made of text blocks is compressed as blocks', { options: { mode: 'route' } }, async ($, on) => {
   world(on)
   on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
   await start($)
@@ -666,7 +666,7 @@ test('a result made of text blocks is compressed as blocks', { options: { mode: 
   expect(content[0]?.text).toContain('(400 passing test lines hidden)')
 })
 
-test('the tee ring wraps after its last slot', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('the tee ring wraps after its last slot', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on, { store: { teeSlot: 199 } })
   on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
   await start($)
@@ -679,7 +679,7 @@ test('the tee ring wraps after its last slot', { options: { mode: 'route', mode:
   expect(Object.keys(w.written).sort()).toEqual(['/home/dev/.claude/model-router/tee/0.txt', '/home/dev/.claude/model-router/tee/199.txt'])
 })
 
-test('the pane shows the route and the savings', { options: { mode: 'route', mode: 'route' } }, async ($, on) => {
+test('the pane shows the route and the savings', { options: { mode: 'route' } }, async ($, on) => {
   world(on)
   await start($)
   await submit($, 'Translate this error message into German: "File not found"')
