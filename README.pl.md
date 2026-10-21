@@ -53,6 +53,12 @@ Trudniejsze zadania to kwestia jakości, nie pieniędzy: domyślnie router podno
 
 Dodatkowo: ręczny `/model` wyłącza routing do końca sesji (`/router on` przywraca), a automatyczny fallback silnika tylko go wstrzymuje do następnego promptu; trzy nieudane lub identyczne wywołania narzędzi z rzędu podnoszą poziom; subagent general-purpose bez wskazanego modelu dostaje tańszy poziom tury (inne typy agentów mogą mieć własny model i nie są ruszane); skille (`/mój-skill`) są kierowane po wpisanej linii i opisie komendy; prompty wpisane w trakcie tury są kierowane, gdy zaczyna się ich tura.
 
+**Effort per zadanie** (`effortMode: auto`): każdy poziom ma bazowy effort, a zadanie przesuwa go o krok: pewna diagnoza, architektura czy bezpieczeństwo w górę, tłumaczenie czy zmiana nazwy w dół. Cache zależy od modelu *i* effort, więc zmiana effort przechodzi ten sam rachunek co przełączenie modelu: na Twoim modelu Twój `/effort` zostaje, póki cache jest ciepły. Router nigdy nie wysyła `max` (ustawienie `max` idzie jako `xhigh`). Workery crew zachowują effort, z którym je zarejestrowano. `effortMode: fixed` to stary effort per poziom.
+
+**Ultracode** dla najtrudniejszych zadań (pewny werdykt Opus/Fable: architektura, niewyjaśniony błąd, audyt, szeroka migracja): `suggest` podpowiada słowo `ultracode` w linii statusu, `auto` dopisuje je do promptu (workflow wieloagentowy: droższa tura, ale często szybciej i taniej w sumie), `off` milczy.
+
+**Uczy się Ciebie** (`adapt: on`): `!poziom` wbrew regułom, `/model` lub `/effort` zmieniony zaraz po skierowanym prompcie i eskalacja po nieudanych narzędziach przesuwają dany rodzaj zadania (jego regułę albo `judge`) o maks. ±2 poziomy lub kroki effort. Korekty wygasają (połowa po dwóch tygodniach) i zostają na Twoim komputerze; `/router` je pokazuje, `/router reset` czyści.
+
 Licznik oszczędności wycenia każde zapytanie dwa razy: tak, jak poszło, i tak, jak poszłoby na Twoim `/model` z jego własnym cache. Zapis cache po przełączeniu liczy się więc jako koszt.
 
 ## Tryb crew: jeden orkiestrator, trzech ciepłych workerów
@@ -72,9 +78,9 @@ Przetestowane na żywo: dwa zadania dla `worker-haiku` w jednej sesji uruchomił
 | `/router style terse\|adhd\|off` | styl odpowiedzi w tej sesji |
 | `/router off` · `/router on` | wyłącz lub włącz routing w tej sesji |
 | `/router log` | ostatnie 50 decyzji jako JSON, do strojenia |
-| `/router reset` | wyczyść sumy, wyuczone profile tur i log |
+| `/router reset` | wyczyść sumy, wyuczone profile tur, wyuczone korekty i log |
 
-Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `layaApiKey`, `enableFable`, effort per poziom, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
+Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `layaApiKey`, `enableFable`, effort per poziom, `effortMode`, `ultracode`, `adapt`, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
 
 ## find-mod
 

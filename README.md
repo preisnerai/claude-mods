@@ -75,7 +75,9 @@ flowchart LR
 - **Subagents:** a general-purpose subagent that names no model gets the turn's cheaper tier. Other agent types may pin a model in their definition, so they, forks and Opus turns are left alone.
 - **Skills** (`/my-skill args`) are routed by what you typed and the command's own description, not by the skill's instructions. Claude Code's own prompt commands (`/code-review`, `/security-review`, `/init`) and MCP prompts run on your `/model`.
 - **Prompts typed during a turn** are routed when their own turn starts.
-- **Effort** follows the tier when the router moves you to another model: Haiku `low`, Sonnet `medium`, Opus `high`, Fable `xhigh`, each configurable. On your own model the request keeps your `/effort`.
+- **Effort per task** (`effortMode: auto`): each tier has a base effort (Haiku `low`, Sonnet `medium`, Opus `high`, Fable `xhigh`, each configurable), and a task moves one step from it: a confident diagnosis, architecture or security task up, a translation or rename down. The cache belongs to model *and* effort, so a new effort goes through the same cost math as a model switch: on your own model your `/effort` stays while its cache is warm. The router never sends `max` (a `max` setting is sent as `xhigh`). Crew workers keep the effort they were registered with. `effortMode: fixed` uses the tier's effort only.
+- **Ultracode** for the hardest tasks (a confident Opus/Fable verdict: architecture, unexplained failure, audit, wide migration): `suggest` names the `ultracode` keyword in the status line, `auto` adds it to the prompt so Claude Code runs it as a multi-agent workflow (dearer per turn, often done sooner and cheaper overall), `off` says nothing.
+- **Learns from you** (`adapt: on`): a `!tier` over what the rules picked, a `/model` or `/effort` change right after a routed prompt, and a tool-failure escalation shift that kind of task (its rule, or `judge`) by up to ±2 tiers or effort steps. Corrections fade with a two-week half-life and stay on your machine; `/router` shows them (`learned: translation +1 tier`), `/router reset` clears them.
 - **The engine's own fallback** (a refusal or an overload switching the model) pauses routing until the next prompt and does not count as a manual `/model`.
 
 ## Crew mode: one orchestrator, three warm workers
@@ -130,7 +132,7 @@ With [rtk](https://github.com/rtk-ai/rtk) on your PATH, plain `cargo test`, `pyt
 | `/router style terse\|adhd\|off` | answer style for this session |
 | `/router off` · `/router on` | stop or resume routing (or crew) for this session |
 | `/router log` | the last 50 routing decisions as JSON lines, for tuning |
-| `/router reset` | clear all-time totals, learned turn profiles and the log |
+| `/router reset` | clear all-time totals, learned turn profiles, learned corrections and the log |
 
 The status line shows each decision (`router: Sonnet·medium (rule .86) · saved ≈$0.41`), and a note beneath each answer names the model and why, for surfaces with no status line.
 
@@ -151,7 +153,10 @@ Shown when you install, and later under `/config`:
 | `layaUrl` | empty | a running [laya-serve](https://github.com/NandhaKishorM/laya) classifies unclear prompts locally, before the judge |
 | `layaApiKey` | empty | sent to laya-serve as a Bearer token |
 | `enableFable` | `false` | route proofs and new theories to Claude Fable 5.1 |
-| `haikuEffort` … `fableEffort` | `low` `medium` `high` `xhigh` | effort per tier, when the router moves you to that model (on your own model your `/effort` stays) |
+| `haikuEffort` … `fableEffort` | `low` `medium` `high` `xhigh` | base effort per tier (never `max`) |
+| `effortMode` | `auto` | effort per task within the tier, when the cache math allows; `fixed`: the tier's effort |
+| `ultracode` | `suggest` | `auto`: add `ultracode` to the hardest prompts; `off` |
+| `adapt` | `on` | learn routing shifts from your corrections; `off` |
 | `showNote` | `true` | the line beneath each answer |
 
 Model ids per tier are at the top of [`model-router/hooks/register.ts`](model-router/hooks/register.ts). On Bedrock or Vertex, put your provider's ids there.
