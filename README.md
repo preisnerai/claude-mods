@@ -168,7 +168,7 @@ Model ids per tier are at the top of [`model-router/hooks/register.ts`](model-ro
 
 ## More mods in this repo
 
-**[find-mod](find-mod)** (0.1, early): finds Claude Code mods on GitHub. `/find-mod what you need` searches the `claude-mod`, `claude-code-mod` and `claude-code-plugin` topics, has Haiku rate each match, and picks the best match with the most stars. `/find-mod install owner/repo` previews first and installs only with `--yes`. Install it with `/plugin marketplace add preisnerai/claude-mods`, then `/plugin install find-mod@claude-mods`. Details in [Polish](README.pl.md#find-mod).
+**[find-mod](find-mod)** (0.1, early): finds Claude Code mods on GitHub. bare `/find-mod` works out the need from the session and asks clarifying questions (and "what next") as clickable `AskUserQuestion` prompts instead of chat text. `/find-mod what you need` searches the `claude-mod`, `claude-code-mod` and `claude-code-plugin` topics, has Haiku rate each match, and picks the best match with the most stars. `/find-mod install owner/repo` previews first and installs only with `--yes`. Install it with `/plugin marketplace add preisnerai/claude-mods`, then `/plugin install find-mod@claude-mods`. Details in [Polish](README.pl.md#find-mod).
 
 To make your own mod findable: add the `claude-mod` topic and a `.claude-plugin/marketplace.json` to its repository.
 

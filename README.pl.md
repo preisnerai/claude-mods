@@ -80,7 +80,7 @@ Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `
 
 > Wersja 0.1, wczesna: logika przetestowana na danych testowych, bez sprawdzenia na żywym GitHubie. Zgłaszaj, co nie działa.
 
-Wyszukiwarka modów na GitHubie. `/find-mod opis tego, czego potrzebujesz` szuka od razu; samo `/find-mod` każe Claude'owi ustalić potrzebę z kontekstu sesji i dopytać, jeśli nie jest pewny. Claude może też sam wywołać narzędzie `mcp__find-mod__search`.
+Wyszukiwarka modów na GitHubie. `/find-mod opis tego, czego potrzebujesz` szuka od razu; samo `/find-mod` każe Claude'owi ustalić potrzebę z kontekstu sesji. Gdy czegoś nie wie, nie pisze pytań w czacie, tylko zadaje je klikalnym oknem z opcjami (`AskUserQuestion`); po wynikach tak samo pyta, co dalej (podgląd najlepszego, podgląd alternatywy, szukaj od nowa). Claude może też sam wywołać narzędzie `mcp__find-mod__search`.
 
 Jak wybiera: opis → angielskie słowa kluczowe → GitHub Search (tematy `claude-mod`, `claude-code-mod`, `claude-code-plugin` oraz szersze zapytanie tekstowe, bez zarchiwizowanych repo) → ocena dopasowania 0–3 przez Haiku (bez wglądu w gwiazdki; bez modelu: dopasowanie słów kluczowych) → spośród pasujących (ocena ≥ 2) wygrywa ten z największą liczbą gwiazdek. Zwraca też do 4 alternatyw.
 
