@@ -3,7 +3,8 @@ export type Tier = 'haiku' | 'sonnet' | 'opus' | 'fable'
 /** `Tier` under a name the engine's own module does not use (inside `declare module 'claude-code'`, `Tier` is the engine's). */
 export type ModelTier = Tier
 
-export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+/** What the router sends. Never `max`: that is the person's own call, by /effort. */
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh'
 
 /** How a tier was chosen: a local rule, the judge model, laya-serve, a `!tier` prefix, a short follow-up. */
 export type Source = 'rule' | 'judge' | 'laya' | 'forced' | 'follow-up' | 'escalated' | 'crew'
@@ -15,6 +16,8 @@ export type Route = {
   effort: Effort
   source: Source
   confidence: number
+  /** On the session's own model: send this effort instead of the session's (the cache math allowed it). */
+  setsEffort?: boolean
 }
 
 /** Output shape the system prompt asks for. */
@@ -88,6 +91,8 @@ declare module 'claude-code' {
       workerWarm: Record<string, { tokens: number; at: number; first: number }>
       /** The line shown beneath the turn's answer. */
       note: string | null
+      /** What the routed task is learned under (its rule, or judge/laya), for corrections that follow it. */
+      category: string | null
       paneAsked: boolean
     }
   }

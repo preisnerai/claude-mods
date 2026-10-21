@@ -1,6 +1,6 @@
 {
   "name": "model-router",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Cache-aware model routing for Claude Code: each prompt goes to Haiku, Sonnet or Opus by what it needs, and a cheaper model only when that pays after the prompt-cache re-write. Crew mode adds warm per-model workers. Bash output is compressed rtk-style and answers drop the filler.",
   "author": {
     "name": "preisnerai"
@@ -123,54 +123,81 @@
     "haikuEffort": {
       "type": "string",
       "title": "Haiku effort",
-      "description": "Effort when the router moves you to Haiku (on your own model your /effort stays, so its cache stays too).",
+      "description": "Base effort when the router moves you to Haiku (on your own model your /effort stays, so its cache stays too). Under effortMode auto a task moves one step from it. Never max: a max here is sent as xhigh.",
       "options": [
         "low",
         "medium",
         "high",
-        "xhigh",
-        "max"
+        "xhigh"
       ],
       "default": "low"
     },
     "sonnetEffort": {
       "type": "string",
       "title": "Sonnet effort",
-      "description": "Effort when the router moves you to Sonnet (on your own model your /effort stays, so its cache stays too).",
+      "description": "Base effort when the router moves you to Sonnet (on your own model your /effort stays, so its cache stays too). Under effortMode auto a task moves one step from it. Never max: a max here is sent as xhigh.",
       "options": [
         "low",
         "medium",
         "high",
-        "xhigh",
-        "max"
+        "xhigh"
       ],
       "default": "medium"
     },
     "opusEffort": {
       "type": "string",
       "title": "Opus effort",
-      "description": "Effort when the router moves you to Opus (on your own model your /effort stays, so its cache stays too).",
+      "description": "Base effort when the router moves you to Opus (on your own model your /effort stays, so its cache stays too). Under effortMode auto a task moves one step from it. Never max: a max here is sent as xhigh.",
       "options": [
         "low",
         "medium",
         "high",
-        "xhigh",
-        "max"
+        "xhigh"
       ],
       "default": "high"
     },
     "fableEffort": {
       "type": "string",
       "title": "Fable effort",
-      "description": "Effort when the router moves you to Fable (on your own model your /effort stays, so its cache stays too).",
+      "description": "Base effort when the router moves you to Fable (on your own model your /effort stays, so its cache stays too). Under effortMode auto a task moves one step from it. Never max: a max here is sent as xhigh.",
       "options": [
         "low",
         "medium",
         "high",
-        "xhigh",
-        "max"
+        "xhigh"
       ],
       "default": "xhigh"
+    },
+    "effortMode": {
+      "type": "string",
+      "title": "Effort per task",
+      "description": "auto picks the effort per prompt within its tier (a confident diagnosis, architecture or security task one step up, a translation or rename one down), taken only when the cache math says it pays, since the cache belongs to model and effort. fixed: the tier's effort, as before. The router never sends max. Crew workers keep their registered effort.",
+      "options": [
+        "auto",
+        "fixed"
+      ],
+      "default": "auto"
+    },
+    "ultracode": {
+      "type": "string",
+      "title": "Ultracode for the hardest tasks",
+      "description": "For confident Opus/Fable tasks (architecture, unexplained failure, audit, wide migration): suggest names the ultracode keyword in the status line; auto adds it to the prompt (multi-agent workflow: dearer per turn, often done sooner and cheaper overall); off says nothing.",
+      "options": [
+        "suggest",
+        "auto",
+        "off"
+      ],
+      "default": "suggest"
+    },
+    "adapt": {
+      "type": "string",
+      "title": "Learn from your corrections",
+      "description": "on: a !tier override, a /model or /effort change right after a routed prompt and tool-failure escalations shift that kind of task by up to 2 tiers or effort steps, fading over weeks. Kept on this machine only; /router shows it, /router reset clears it.",
+      "options": [
+        "on",
+        "off"
+      ],
+      "default": "on"
     }
   }
 }

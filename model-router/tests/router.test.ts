@@ -276,7 +276,7 @@ test('suggest mode leaves the model and names the tier', { options: { mode: 'rou
   expect(w.statuses.at(-1)).toContain('consider !opus')
 })
 
-test('/model by hand turns routing off until /router on', { options: { mode: 'route' } }, async ($, on) => {
+test('/model by hand turns routing off until /router on', { options: { mode: 'route', adapt: 'off' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
@@ -691,4 +691,124 @@ test('the pane shows the route and the savings', { options: { mode: 'route' } },
     expect((await ui.find({ type: 'Text', text: /^saved/ })) !== undefined).toBe(true)
     await ui.unmount()
   }
+})
+
+const HARD = 'Why does the checkout service crash intermittently? Investigate the root cause.'
+
+test('the router never sends max, even when a setting asks for it', { options: { mode: 'route', opusEffort: 'max', escalate: 'auto' } }, async ($, on) => {
+  const w = world(on, { model: 'claude-haiku-5-5' })
+  await start($)
+
+  await submit($, HARD)
+  await step($, undefined, 'claude-haiku-5-5')
+
+  expect(w.sent).toEqual([{ model: 'claude-opus-5-5', effort: 'xhigh' }])
+})
+
+test('effort is picked per task: a review on your own Opus goes at high while nothing is cached', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, 'Review the changes in the auth module please')
+  await step($)
+
+  expect(w.sent).toEqual([{ model: 'claude-opus-5-5', effort: 'high' }])
+})
+
+test('an effort change on your own model passes the cache math: a warm cache keeps your /effort', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  w.setContext(60_000)
+
+  await submit($, 'hi')
+  await step($)
+  await submit($, 'Review the changes in the auth module please')
+  await step($)
+
+  expect(w.sent.map(s => s.effort)).toEqual(['xhigh', 'xhigh'])
+})
+
+test('after a task went out at its own effort, the next prompt is priced from that warm cache, not from your /effort', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, 'Review the changes in the auth module please')
+  await step($)
+  w.setContext(60_000)
+  await submit($, 'hi')
+  await step($)
+
+  expect(w.sent.map(s => s.effort)).toEqual(['high', 'high'])
+})
+
+test('effortMode fixed keeps the tier effort', { options: { mode: 'route', effortMode: 'fixed' } }, async ($, on) => {
+  const w = world(on, { model: 'claude-haiku-5-5' })
+  await start($)
+
+  await submit($, HARD)
+  await step($, undefined, 'claude-haiku-5-5')
+
+  expect(w.sent).toEqual([{ model: 'claude-opus-5-5', effort: 'high' }])
+})
+
+test('ultracode suggest names it in the status line and leaves the prompt alone', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  const out = await submit($, HARD)
+
+  expect(w.statuses.at(-1)).toContain("add 'ultracode'")
+  expect((out as { text?: string }).text).toBe(HARD)
+})
+
+test('ultracode auto adds the keyword to a hard prompt, once, and not to an easy one', { options: { mode: 'route', ultracode: 'auto' } }, async ($, on) => {
+  world(on)
+  await start($)
+
+  expect(((await submit($, HARD)) as { text?: string }).text).toBe(`${HARD}\n\nultracode`)
+  expect(((await submit($, `${HARD} ultracode`)) as { text?: string }).text).toBe(`${HARD} ultracode`)
+  expect(((await submit($, 'Translate this sentence into French for me')) as { text?: string }).text).toBe('Translate this sentence into French for me')
+})
+
+test('ultracode off says nothing', { options: { mode: 'route', ultracode: 'off' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  const out = await submit($, HARD)
+
+  expect(w.statuses.some(s => s?.includes('ultracode'))).toBe(false)
+  expect((out as { text?: string }).text).toBe(HARD)
+})
+
+test('a !tier override is learned for that kind of task, shown, fades and is reset', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, '!sonnet Translate this sentence into French for me')
+  await step($)
+  await submit($, 'Translate another sentence into French for me')
+  await step($)
+  expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5'])
+  expect((await router($, '')).text).toContain('learned: translation +1 tier')
+
+  // Two months later the correction has faded.
+  await w.clock.advance(60 * 24 * 60 * 60_000)
+  await submit($, 'Translate a third sentence into French for me')
+  await step($)
+  expect(w.sent.at(-1)?.model).toBe('claude-haiku-5-5')
+
+  await submit($, '!sonnet Translate this sentence into French for me')
+  await router($, 'reset')
+  expect((await router($, '')).text).toContain('learned: nothing yet')
+})
+
+test('with adapt off nothing is learned', { options: { mode: 'route', adapt: 'off' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, '!sonnet Translate this sentence into French for me')
+  await step($)
+  await submit($, 'Translate another sentence into French for me')
+  await step($)
+  expect(w.sent.at(-1)?.model).toBe('claude-haiku-5-5')
 })
