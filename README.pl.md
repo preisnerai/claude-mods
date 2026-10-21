@@ -67,6 +67,7 @@ Przetestowane na żywo: dwa zadania dla `worker-haiku` w jednej sesji uruchomił
 | | |
 |---|---|
 | `/router` | aktualny model, oszczędności w sesji i łącznie, przełączenia i wstrzymania, kompresja |
+| `/router panel` | otwórz panel na żywo |
 | `/router style terse\|adhd\|off` | styl odpowiedzi w tej sesji |
 | `/router off` · `/router on` | wyłącz lub włącz routing w tej sesji |
 | `/router log` | ostatnie 50 decyzji jako JSON, do strojenia |
