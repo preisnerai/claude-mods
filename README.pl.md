@@ -26,6 +26,12 @@ W sesji Claude Code w terminalu:
 
 Bez serwera, bez binarki, bez klucza API. Z powłoki: `claude plugin marketplace add preisnerai/claude-mods`, potem `claude plugin install model-router@claude-mods`. W aplikacji desktopowej: **+** obok pola promptu → Plugins → Add marketplace `preisnerai/claude-mods` → Add plugin.
 
+### Automatyczne aktualizacje
+
+Dla marketplace'ów spoza Anthropic są domyślnie wyłączone. Włącz raz: `/plugin` → **Marketplaces** → `claude-mods` → **Enable auto-update**. Od tej pory nowe wersje przychodzą same, w tle po starcie sesji. Bez tego: `/plugin marketplace update claude-mods`.
+
+Dla całej firmy administrator ustawia w managed settings `"autoUpdate": true` przy wpisie `claude-mods` w `extraKnownMarketplaces` ([dokumentacja](https://code.claude.com/docs/en/plugins/org#set-update-policy)).
+
 ## Dlaczego routing musi liczyć cache
 
 Router, który zmienia model przy każdym prompcie, potrafi **dokładać** do rachunku. Prompt cache należy do jednego modelu: po zmianie następne zapytanie płaci za zapis całej rozmowy, 2× ceny wejścia przy godzinnych wpisach, które zapisuje Claude Code. Sam prompt systemowy i narzędzia to dziesiątki tysięcy tokenów, więc nawet młoda sesja ma co stracić.

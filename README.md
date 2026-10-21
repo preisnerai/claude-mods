@@ -33,6 +33,12 @@ At the prompt of a Claude Code terminal session:
 
 That's it: no server, no binary, no API key. From a shell: `claude plugin marketplace add preisnerai/claude-mods`, then `claude plugin install model-router@claude-mods`. In the desktop app: **+** next to the prompt box → Plugins → Add marketplace `preisnerai/claude-mods` → Add plugin.
 
+### Automatic updates
+
+They are off by default for marketplaces outside Anthropic's. Turn them on once: `/plugin` → **Marketplaces** → `claude-mods` → **Enable auto-update**. New versions then arrive by themselves, in the background after a session starts. Without it: `/plugin marketplace update claude-mods`.
+
+For a whole company, an admin sets `"autoUpdate": true` on the `claude-mods` entry of `extraKnownMarketplaces` in managed settings ([docs](https://code.claude.com/docs/en/plugins/org#set-update-policy)).
+
 ## Why cache-aware routing matters
 
 A router that switches models on every prompt can **cost** you money. Claude's prompt cache belongs to one model: switch, and the next request pays the cache-write price for the whole conversation: 2× input, for the 1-hour entries Claude Code writes. Its system prompt and tools alone run to tens of thousands of tokens, so even a young session has something to lose.
@@ -187,9 +193,11 @@ To make your own mod findable: add the `claude-mod` topic and a `.claude-plugin/
 
 ```bash
 claude plugin validate model-router
-claude plugin test model-router      # 87 tests: rules, cost model, compression, routing and crew end to end
+claude plugin test model-router      # 103 tests: rules, cost model, compression, routing and crew end to end
 claude --plugin-dir model-router     # try it in a session
 ```
+
+A change to a mod ships only with a new `version` in its `.claude-plugin/plugin.json`: auto-update compares versions, and CI fails a pull request that changes a mod without bumping it.
 
 ## License
 

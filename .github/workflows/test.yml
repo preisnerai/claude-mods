@@ -23,3 +23,28 @@ jobs:
       - run: claude plugin test model-router
       - run: claude plugin validate find-mod
       - run: claude plugin test find-mod
+
+  # Auto-update delivers a mod only when its version changes: a PR that changes a mod must bump it.
+  version:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: A changed mod has a new version
+        env:
+          BASE: origin/${{ github.base_ref }}
+        run: |
+          fail=0
+          for mod in model-router find-mod; do
+            changed=$(git diff --name-only "$BASE"...HEAD -- "$mod" ':(exclude,glob)**/*.md' ":(exclude)$mod/tests")
+            [ -z "$changed" ] && continue
+            old=$(git show "$BASE:$mod/.claude-plugin/plugin.json" 2>/dev/null | jq -r .version)
+            new=$(jq -r .version "$mod/.claude-plugin/plugin.json")
+            if [ "$old" = "$new" ]; then
+              echo "::error file=$mod/.claude-plugin/plugin.json::$mod changed but its version is still $new: bump it, or auto-update will not deliver the change"
+              fail=1
+            fi
+          done
+          exit $fail
