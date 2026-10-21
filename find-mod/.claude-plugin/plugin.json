@@ -1,6 +1,6 @@
 {
   "name": "find-mod",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Wyszukiwarka modów do Claude Code na GitHubie: z opisu albo z kontekstu sesji, wybiera pasujący mod z największą liczbą gwiazdek.",
   "author": {
     "name": "preisnerai"

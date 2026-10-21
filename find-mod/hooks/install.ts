@@ -10,7 +10,8 @@ export type Target = { owner: string; repo: string; plugin?: string }
 
 type Run = (argv: readonly string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>
 
-export type Catalog = { plugins: { name: string; description: string }[] }
+// marketplace: pole name z marketplace.json; pod tą nazwą CLI rejestruje marketplace (plugin@marketplace).
+export type Catalog = { marketplace: string; plugins: { name: string; description: string }[] }
 
 export type AutoStar = 'ask' | 'always' | 'never'
 
@@ -30,7 +31,7 @@ export function parseAutoStar(value: unknown): AutoStar {
   return value === 'always' || value === 'never' ? value : 'ask'
 }
 
-// Katalog pluginów repo: jego .claude-plugin/marketplace.json (to z niego `plugin install` bierze nazwy).
+// Katalog pluginów repo: jego .claude-plugin/marketplace.json (z niego CLI bierze nazwę marketplace'u i pluginów).
 export async function readCatalog(get: Get, t: Target): Promise<Catalog | { problem: string }> {
   const reply = await get(`https://raw.githubusercontent.com/${t.owner}/${t.repo}/HEAD/.claude-plugin/marketplace.json`).catch(
     () => undefined,
@@ -41,14 +42,16 @@ export async function readCatalog(get: Get, t: Target): Promise<Catalog | { prob
   }
   if (!reply.ok) return { problem: `GitHub odpowiedział statusem ${reply.status}` }
   try {
-    const json = JSON.parse(reply.text) as { plugins?: unknown }
+    const json = JSON.parse(reply.text) as { name?: unknown; plugins?: unknown }
+    const marketplace = typeof json.name === 'string' ? json.name : ''
+    if (!NAME.test(marketplace)) return { problem: 'plik marketplace.json nie ma poprawnego pola name' }
     const plugins = (Array.isArray(json.plugins) ? json.plugins : [])
       .map((p: Record<string, unknown>) => ({
         name: typeof p.name === 'string' ? p.name : '',
         description: typeof p.description === 'string' ? p.description : '',
       }))
       .filter(p => NAME.test(p.name))
-    return plugins.length === 0 ? { problem: 'plik marketplace.json nie wymienia żadnego pluginu' } : { plugins }
+    return plugins.length === 0 ? { problem: 'plik marketplace.json nie wymienia żadnego pluginu' } : { marketplace, plugins }
   } catch {
     return { problem: 'plik marketplace.json nie jest poprawnym JSON-em' }
   }
@@ -82,13 +85,20 @@ export function previewText(t: Target, catalog: Catalog, name: string): string {
     .join('\n')
 }
 
-export async function installMod(run: Run, t: Target, name: string): Promise<{ ok: boolean; text: string }> {
-  const r = await run(['claude', 'plugin', 'install', name, '--marketplace', `${t.owner}/${t.repo}`, '--json']).catch(
-    (err: unknown) => ({ exitCode: -1, stdout: '', stderr: err instanceof Error ? err.message : 'nie udało się uruchomić claude' }),
-  )
+// Dwa kroki, jak w CLI: dodać repo jako marketplace (ponowne dodanie nic nie psuje), potem
+// zainstalować plugin@marketplace. --yes, bo CLI działa tu bez terminala.
+export async function installMod(run: Run, t: Target, name: string, marketplace: string): Promise<{ ok: boolean; text: string }> {
+  const tryRun = (argv: readonly string[]) =>
+    run(argv).catch((err: unknown) => ({ exitCode: -1, stdout: '', stderr: err instanceof Error ? err.message : 'nie udało się uruchomić claude' }))
+  const why = (r: { stdout: string; stderr: string }) => {
+    const text = (r.stderr || r.stdout).trim().split('\n').slice(-3).join(' ').slice(0, 300)
+    return text === '' ? '' : `: ${text}`
+  }
+  const added = await tryRun(['claude', 'plugin', 'marketplace', 'add', `${t.owner}/${t.repo}`])
+  if (added.exitCode !== 0) return { ok: false, text: `Nie udało się dodać marketplace'u ${t.owner}/${t.repo}${why(added)}.` }
+  const r = await tryRun(['claude', 'plugin', 'install', `${name}@${marketplace}`, '--yes'])
   if (r.exitCode === 0) return { ok: true, text: `Zainstalowano ${name} (${t.owner}/${t.repo}).` }
-  const why = (r.stderr || r.stdout).trim().split('\n').slice(-3).join(' ').slice(0, 300)
-  return { ok: false, text: `Instalacja ${name} nie powiodła się${why === '' ? '' : `: ${why}`}.` }
+  return { ok: false, text: `Instalacja ${name} nie powiodła się${why(r)}.` }
 }
 
 // Gwiazdka przez `gh` użytkownika: to jego konto i jego zgoda. Gdy gh brak lub nie zalogowany, podajemy link.

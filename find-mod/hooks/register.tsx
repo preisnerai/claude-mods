@@ -48,7 +48,7 @@ async function install($: EngineInterface, arg: string, isConfirmed: boolean, mo
   const picked = pickPlugin(catalog, target)
   if ('problem' in picked) return `find-mod: ${picked.problem}.`
   if (!isConfirmed) return previewText(target, catalog, picked.name)
-  const done = await installMod(run($), target, picked.name)
+  const done = await installMod(run($), target, picked.name, catalog.marketplace)
   return done.ok ? done.text + (await afterInstall(run($), target, mode)) : done.text
 }
 

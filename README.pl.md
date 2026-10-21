@@ -20,10 +20,11 @@ Panel **Model router** (w aplikacji desktopowej obok rozmowy) pokazuje na żywo 
 W sesji Claude Code w terminalu:
 
 ```
-/plugin install model-router --marketplace preisnerai/claude-mods
+/plugin marketplace add preisnerai/claude-mods
+/plugin install model-router@claude-mods
 ```
 
-Odpowiedz `y`, żeby dodać marketplace, i wybierz zakres. Bez serwera, bez binarki, bez klucza API. Z powłoki: `claude plugin install model-router --marketplace preisnerai/claude-mods`. W aplikacji desktopowej: **+** obok pola promptu → Plugins → Add marketplace `preisnerai/claude-mods` → Add plugin.
+Bez serwera, bez binarki, bez klucza API. Z powłoki: `claude plugin marketplace add preisnerai/claude-mods`, potem `claude plugin install model-router@claude-mods`. W aplikacji desktopowej: **+** obok pola promptu → Plugins → Add marketplace `preisnerai/claude-mods` → Add plugin.
 
 ## Dlaczego routing musi liczyć cache
 
@@ -87,12 +88,12 @@ Bez tokenu GitHub dopuszcza 10 wyszukiwań na minutę; przy limicie mod mówi to
 
 ### Instalacja i gwiazdka
 
-- `/find-mod install owner/repo` (albo `owner/repo:plugin`, gdy repo ma kilka) pokazuje podgląd i niczego nie instaluje. Dopiero `... --yes` instaluje (`claude plugin install <plugin> --marketplace owner/repo`). Repo musi mieć `.claude-plugin/marketplace.json`; bez niego mod mówi, że nie zainstaluje automatycznie.
+- `/find-mod install owner/repo` (albo `owner/repo:plugin`, gdy repo ma kilka) pokazuje podgląd i niczego nie instaluje. Dopiero `... --yes` instaluje w dwóch krokach: `claude plugin marketplace add owner/repo`, potem `claude plugin install <plugin>@<marketplace> --yes`, gdzie `<marketplace>` to pole `name` z `.claude-plugin/marketplace.json` repozytorium (nie `owner/repo`). Repo musi mieć ten plik; bez niego mod mówi, że nie zainstaluje automatycznie.
 - Gwiazdka dla autora (`gh api -X PUT user/starred/owner/repo`) zależy od ustawienia `autoStar`: `ask` (domyślnie) po instalacji tylko proponuje `/find-mod star owner/repo`, `always` daje ją sama po udanej instalacji, `never` nic nie robi. Bez zalogowanego `gh` mod podaje link do ręcznego oddania gwiazdki. Claude nie ma narzędzia do instalacji: instalujesz tylko Ty, własnym poleceniem.
 
 ### Instalacja
 
-`/plugin marketplace add preisnerai/claude-mods`, potem `/plugin install find-mod` (albo `model-router`).
+`/plugin marketplace add preisnerai/claude-mods`, potem `/plugin install find-mod@claude-mods` (albo `model-router@claude-mods`).
 
 Żeby Twój mod był znajdowany: dodaj do repozytorium temat `claude-mod` i plik `.claude-plugin/marketplace.json`.
 
