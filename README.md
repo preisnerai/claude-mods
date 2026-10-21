@@ -79,7 +79,7 @@ flowchart LR
 
 ## Crew mode: one orchestrator, three warm workers
 
-Set `mode: crew` and the main session stays on one orchestrator model (Sonnet by default). It moves there once, at the first prompt, and never again, so its prompt cache is never thrown away. Work that takes several tool calls goes to long-lived workers:
+By default (`mode: crew`) the main session stays on one orchestrator model (Sonnet by default). It moves there once, at the first prompt, and never again, so its prompt cache is never thrown away. Work that takes several tool calls goes to long-lived workers:
 
 | Worker | Model | Gets |
 |---|---|---|
@@ -139,7 +139,7 @@ Shown when you install, and later under `/config`:
 
 | Setting | Default | |
 |---|---|---|
-| `mode` | `route` | `crew`: orchestrator plus warm workers, no model switches |
+| `mode` | `crew` | `route`: one session that switches models when the cache math pays, no workers |
 | `orchestrator` | `sonnet` | the main session's model in crew mode |
 | `escalate` | `auto` | `suggest`: only name a harder tier in the status line |
 | `style` | `terse` | `adhd`, `off` |
