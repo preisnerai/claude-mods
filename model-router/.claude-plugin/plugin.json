@@ -1,6 +1,6 @@
 {
   "name": "model-router",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Cache-aware model routing for Claude Code: each prompt goes to Haiku, Sonnet or Opus by what it needs, and a cheaper model only when that pays after the prompt-cache re-write. Crew mode adds warm per-model workers. Bash output is compressed rtk-style and answers drop the filler.",
   "author": {
     "name": "preisnerai"

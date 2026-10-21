@@ -11,6 +11,8 @@
 | 🗜️ **Kompresja** | Wyjście Basha kurczy się, zanim trafi do rozmowy, w stylu rtk: bez pasków postępu i zaliczonych testów, identyczne powtórzenia zwinięte w licznik, każda linia z błędem zachowana. Zawartość plików, diffy i dane przechodzą nietknięte. Pełne wyjście zostaje na dysku (`~/.claude/model-router/tee/`, ostatnie 200). Z zainstalowanym [rtk](https://github.com/rtk-ai/rtk) zwykłe uruchomienia `cargo test`, `pytest`, `tsc`, `mypy` i `go build` idą przez `rtk pipe`; podsumowanie, które gubi błędy, jest odrzucane. | Mniej wejścia w każdym kolejnym zapytaniu |
 | ✂️ **Krócej** | Jedna krótka sekcja promptu systemowego: bez wstępów, podsumowań i formułek na koniec, komendy w jednym wywołaniu, czytanie fragmentów plików. Tryb `adhd` zaczyna od następnej akcji, wg [i-have-adhd](https://github.com/ayghri/i-have-adhd). | Mniej tokenów wyjściowych, które kosztują 5× więcej niż wejściowe |
 
+Panel **Model router** (w aplikacji desktopowej obok rozmowy) pokazuje na żywo bieżący model, oszczędność i tury na model.
+
 `/router` pokazuje, ile zaoszczędził routing (w dolarach) i ile tokenów kompresja trzymała poza kontekstem, dla tej sesji i łącznie.
 
 ## Instalacja

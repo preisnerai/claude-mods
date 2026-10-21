@@ -17,6 +17,7 @@ function world(on: On, opts: { judge?: string; judgeFails?: boolean; model?: str
   on('session.messages', () => ({ value: [] }))
   on('session.id', () => ({ value: 'session-0123456789' }))
   on('command.register', () => ({ value: { command: 'router' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
   on('command.list', () => ({ value: (opts.commands ?? []) as never }))
   on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/dev' : undefined }))
   on('fs.write', ($, e) => {
@@ -676,4 +677,18 @@ test('the tee ring wraps after its last slot', async ($, on) => {
     await $.session.append({ door: 'tool-result', origin: { kind: 'tool', tool: 'Bash' }, uuid: id, message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: big(id.length) }] } })
   }
   expect(Object.keys(w.written).sort()).toEqual(['/home/dev/.claude/model-router/tee/0.txt', '/home/dev/.claude/model-router/tee/199.txt'])
+})
+
+test('the pane shows the route and the savings', async ($, on) => {
+  world(on)
+  await start($)
+  await submit($, 'Translate this error message into German: "File not found"')
+  await step($)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'model-router', component: 'Pane', requestId: 'model-router', props: { title: 'Model router' } as never, surface })
+    expect((await ui.find({ type: 'Text', text: /^Haiku·low/ })) !== undefined).toBe(true)
+    expect((await ui.find({ type: 'Text', text: /^saved/ })) !== undefined).toBe(true)
+    await ui.unmount()
+  }
 })

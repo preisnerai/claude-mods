@@ -17,6 +17,7 @@ const MODEL: Record<Tier, string> = {
   opus: 'claude-opus-5-5',
   fable: 'claude-fable-5-1',
 }
+const PANE = 'model-router'
 const NAME: Record<Tier, string> = { haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus', fable: 'Fable' }
 const EFFORT: Record<Tier, Effort> = { haiku: 'low', sonnet: 'medium', opus: 'high', fable: 'xhigh' }
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -524,6 +525,7 @@ export const register: Register = (on, options) => {
       ? $.process.run(['rtk', '--version'], { timeoutMs: 3_000 }).then(r => r.exitCode === 0 && /^rtk\s/.test(r.stdout)).catch(() => false)
       : Promise.resolve(false)
     await $.command.register({ name: 'router', description: 'model-router: savings, route, style (/router off|on|style|log|reset)' })
+    $.ui.open({ id: PANE, title: 'Model router' }).catch(() => {})
     if (cfg.mode === 'crew') {
       for (const t of WORKERS) {
         try {
@@ -532,6 +534,29 @@ export const register: Register = (on, options) => {
       }
     }
     return next(e)
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const l = await read($, ledger)
+    const r = await read($, route)
+    const manual = await read($, isManual)
+    const s = (await read($, style)) ?? cfg.style
+    const total = ORDER.reduce((n, t) => n + l.turns[t], 0)
+    return (
+      <Box flexDirection="column">
+        <Text bold>{manual ? 'off · /router on' : r === null ? 'not routed yet' : describe(r)}</Text>
+        <Text color="green">saved {l.baselineUsd === 0 ? '—' : `≈${dollars(saved(l))}`}</Text>
+        {ORDER.filter(t => l.turns[t] > 0).map(t => (
+          <Text>
+            {`${NAME[t].padEnd(7)}${'█'.repeat(Math.max(1, Math.round((l.turns[t] / total) * 12)))} ${l.turns[t]}`}
+          </Text>
+        ))}
+        <Text dimColor>
+          {l.compressions === 0 ? 'no compression yet' : `≈${size((l.rawChars - l.keptChars) / 4)} tokens kept out`} · {cfg.mode} · {s}
+        </Text>
+      </Box>
+    )
   })
 
   on('command.run', { command: 'router' }, async ($, e) => {
