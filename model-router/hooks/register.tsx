@@ -503,7 +503,7 @@ export const register: Register = (on, options) => {
   const laya = String(options.layaUrl ?? '').trim().replace(/\/+$/, '')
   const key = String(options.layaApiKey ?? '')
   const cfg: Config = {
-    mode: pick(options.mode, ['route', 'crew'] as const, 'route'),
+    mode: pick(options.mode, ['route', 'crew'] as const, 'crew'),
     orchestrator: pick(options.orchestrator, ['haiku', 'sonnet', 'opus'] as const, 'sonnet'),
     cache: CACHE[pick(options.cacheTtl, ['1h', '5m'] as const, '1h')],
     effort: Object.fromEntries(ORDER.map(t => [t, pick(options[`${t}Effort`], EFFORTS, EFFORT[t])])) as Record<Tier, Effort>,
