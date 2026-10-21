@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentInfo, AgentStatus, EngineInterface, Register } from 'claude-code'
+import type { AgentInfo, AgentSpawnInput, AgentSpawnResult, AgentStatus, EngineInterface, Register } from 'claude-code'
 
-import type { Effort, Ledger, Route, Sent, Style, Tier } from '../types'
+import type { Effort, Ledger, Route, Sent, Style, SubAgent, Tier } from '../types'
 import { EFFORTS, ULTRACODE, categoryOf, clampEffort, effortFor, isHardest, learnedLine, nudge, shiftOf, shiftTier } from './adapt'
 import type { Bias } from './adapt'
 import { ORDER, heuristic, isFollowUp, layaQuestion, parseJudge, parseLaya, rank, rubric, words } from './classify'
@@ -34,6 +34,9 @@ const LAYA_TIMEOUT_MS = 4_000
 const LOG_CAP = 500
 const TEE_SLOTS = 200
 const QUEUE_CAP = 10
+// Subagents kept for the pane, and the rows it draws (the newest).
+const AGENT_CAP = 50
+const AGENT_ROWS = 8
 
 const route = atom({ plugin: 'model-router', key: 'route' } as const, null)
 const sessionModel = atom({ plugin: 'model-router', key: 'sessionModel' } as const, null)
@@ -59,6 +62,7 @@ const workerWarm = atom({ plugin: 'model-router', key: 'workerWarm' } as const, 
 const paneAsked = atom({ plugin: 'model-router', key: 'paneAsked' } as const, false)
 const note = atom({ plugin: 'model-router', key: 'note' } as const, null)
 const category = atom({ plugin: 'model-router', key: 'category' } as const, null)
+const subagents = atom({ plugin: 'model-router', key: 'subagents' } as const, [])
 
 type $ = EngineInterface
 
@@ -462,6 +466,23 @@ async function reuseIsCheaper($: $, agentId: string, tier: Tier, cfg: Config): P
   return reuse === undefined || fresh === undefined || reuse <= fresh
 }
 
+/** A started subagent joins the pane's list, so the person sees each one start and on which model. */
+async function spawned($: $, e: AgentSpawnInput, started: AgentSpawnResult): Promise<AgentSpawnResult> {
+  const id = started.agentId
+  // Never throws: the agent already started, and the hook's fallback would start it again.
+  try {
+    if (id !== undefined) {
+      const one: SubAgent = { id, label: e.name ?? (e.description || e.subagentType), model: started.model, status: 'running', steps: 0, usd: 0 }
+      await update($, subagents, list => [...list.filter(a => a.id !== id), one].slice(-AGENT_CAP))
+    }
+  } catch {}
+  return started
+}
+
+async function setAgent($: $, id: string, fn: (a: SubAgent) => SubAgent) {
+  await update($, subagents, list => (list.some(a => a.id === id) ? list.map(a => (a.id === id ? fn(a) : a)) : list))
+}
+
 /** Every cache entry cut down to what a fresh conversation still shares with the old one: the system prompt and tools. */
 async function shrinkCaches($: $, keep: number) {
   await update($, warm, w => Object.fromEntries(Object.entries(w).map(([k, v]) => [k, { ...v, tokens: Math.min(v.tokens, keep) }])))
@@ -637,12 +658,20 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const l = await read($, ledger)
     const r = await read($, route)
     const manual = await read($, isManual)
     const s = (await read($, style)) ?? cfg.style
     const total = ORDER.reduce((n, t) => n + l.turns[t], 0)
+    const agents = await read($, subagents)
+    const running = agents.filter(a => a.status === 'running').length
+    const modelOf = (m: string) => {
+      const t = tierOf(m)
+      return t === undefined ? m : NAME[t]
+    }
+    const perModel = [...new Set(agents.map(a => modelOf(a.model)))].map(m => `${m} ${agents.filter(a => modelOf(a.model) === m).length}`).join(' · ')
+    const MARK = { running: ['●', 'yellow'], done: ['✓', 'green'], failed: ['✗', 'red'] } as const
     return (
       <Box flexDirection="column">
         <Text bold>{manual ? 'off · /router on' : r === null ? 'not routed yet' : describe(r)}</Text>
@@ -655,6 +684,16 @@ export const register: Register = (on, options) => {
         <Text dimColor>
           {l.compressions === 0 ? 'no compression yet' : `≈${size((l.rawChars - l.keptChars) / 4)} tokens kept out`} · {cfg.mode} · {s}
         </Text>
+        <Text bold>{agents.length === 0 ? 'Subagents: none yet' : `Subagents ${agents.length} · ${running} running`}</Text>
+        {agents.length > 0 && <Text dimColor>{perModel}</Text>}
+        {agents.length > AGENT_ROWS && <Text dimColor>{`+${agents.length - AGENT_ROWS} earlier`}</Text>}
+        {agents.slice(-AGENT_ROWS).map(a => (
+          <Button key={a.id} plain onPress={() => $.ui.view({ agentId: a.id })}>
+            <Text color={MARK[a.status][1]}>{MARK[a.status][0]}</Text>
+            {` ${modelOf(a.model).padEnd(7)}${a.label} `}
+            <Text dimColor>{`${a.steps} req · ${dollars(a.usd)}`}</Text>
+          </Button>
+        ))}
       </Box>
     )
   })
@@ -782,6 +821,9 @@ export const register: Register = (on, options) => {
         await update($, queued, q => q.filter(x => x !== waiting))
         await enter($, waiting.text, waiting.tier, cfg)
       }
+    } else {
+      // A worker that finished and took the next task by message runs again.
+      await setAgent($, e.agentId, a => ({ ...a, status: 'running' }))
     }
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -794,6 +836,10 @@ export const register: Register = (on, options) => {
         const base = await read($, sessionModel)
         const u = result.usage
         const id = e.agentId
+        if (u !== null) {
+          const cost = usd(u.model || e.model, u, cfg.cache) ?? 0
+          await setAgent($, id, a => ({ ...a, steps: a.steps + 1, usd: a.usd + cost }))
+        }
         if (u !== null && (await read($, workers)).includes(id)) {
           const prompt = promptOf(u)
           await update($, workerWarm, w => ({ ...w, [id]: { tokens: prompt, at: startedAt, first: w[id]?.first ?? prompt } }))
@@ -880,6 +926,9 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId !== undefined) {
+      try {
+        await setAgent($, e.agentId, a => ({ ...a, status: e.reason === 'answer' ? 'done' : 'failed' }))
+      } catch {}
       return done
     }
     try {
@@ -931,23 +980,23 @@ export const register: Register = (on, options) => {
           const id = started.agentId
           await update($, workers, w => [...w, id].slice(-50))
         }
-        return started
+        return spawned($, e, started)
       } finally {
         starting.delete(worker)
       }
     }
     // Crew mode leaves every other agent alone: the orchestrator's model is a setting, not a judgment of the task.
     if (cfg.mode === 'crew') {
-      return next(e)
+      return spawned($, e, await next(e))
     }
     // A general-purpose subagent inherits the session's model; on a cheaper turn it takes the turn's model.
     // Every other agent type may pin its own model in its definition, which this hook cannot see: left alone.
     const r = await read($, route)
     const inherits = e.subagentType === 'general-purpose' && e.provider.plugin === 'engine' && !e.fork && e.isTeammate !== true && e.model === undefined
     if (r === null || !inherits || rank(r.tier) >= rank('opus') || (await read($, isManual))) {
-      return next(e)
+      return spawned($, e, await next(e))
     }
-    return next({ ...e, model: r.model })
+    return spawned($, e, await next({ ...e, model: r.model }))
   }).catch(($, e, next) => next(e))
 
   // Struggling: tools keep failing, or the same call comes back. Escalate once per turn (or suggest it).

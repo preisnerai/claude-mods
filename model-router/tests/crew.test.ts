@@ -235,3 +235,25 @@ test('a teammate gets the terse rules even when the person chose the ADHD shape'
   expect((await $.prompt.compose(COMPOSE)).sections.find(s => s.id === 'model-router:style')?.text).toContain('ADHD-friendly')
   expect((await $.prompt.compose({ ...COMPOSE, traits: ['teammate'] })).sections.find(s => s.id === 'model-router:style')?.text).toContain('Output economy')
 })
+
+test('the pane lists every subagent as it starts, with its model, status and cost', CREW, async ($, on) => {
+  const w = world(on)
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  await start($)
+
+  const haiku = await spawn($, 'model-router:worker-haiku')
+  await spawn($, 'model-router:worker-opus')
+  await spawn($, 'Explore')
+  w.setUsage({ input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: '' })
+  await step($, haiku.agentId, 'claude-haiku-5-5')
+  await $.turn.complete({ turnId: 't', agentId: haiku.agentId, answer: 'done', durationMs: 1, isAborted: false, reason: 'answer' } as never)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'model-router', component: 'Pane', requestId: 'model-router', props: { title: 'Model router' } as never, surface })
+    expect((await ui.find({ type: 'Text', text: /^Subagents 3 · 2 running$/ })) !== undefined).toBe(true)
+    expect((await ui.find({ type: 'Text', text: 'Haiku 1 · Opus 1 · Sonnet 1' })) !== undefined).toBe(true)
+    expect((await ui.find({ type: 'Text', text: '1 req · $0.0011' })) !== undefined).toBe(true)
+    expect((await ui.find({ type: 'Text', text: '✓' })) !== undefined).toBe(true)
+    await ui.unmount()
+  }
+})

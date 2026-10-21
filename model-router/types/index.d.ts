@@ -53,6 +53,18 @@ export type Sent = { model: string; effort: string | number | null }
 /** A prompt typed while a turn ran, routed when its own turn starts. */
 export type Queued = { text: string; tier: Tier | null }
 
+/** One subagent of this session as the pane lists it: what it runs on, where it stands, what it cost. */
+export type SubAgent = {
+  id: string
+  /** Its name, else the Agent call's description, else its type. */
+  label: string
+  model: string
+  status: 'running' | 'done' | 'failed'
+  /** Its requests so far, and their estimated dollars at list prices. */
+  steps: number
+  usd: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'model-router': {
@@ -94,6 +106,8 @@ declare module 'claude-code' {
       /** What the routed task is learned under (its rule, or judge/laya), for corrections that follow it. */
       category: string | null
       paneAsked: boolean
+      /** Every subagent this session started, oldest first, for the pane. */
+      subagents: SubAgent[]
     }
   }
 }

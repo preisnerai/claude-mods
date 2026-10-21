@@ -18,7 +18,7 @@
 | 🗜️ **Compress** | Bash output shrinks before it enters the conversation, rtk-style: no progress bars or passing tests, exact repeats folded into a count, every error kept. File contents, diffs and data pass untouched. The full output is kept on disk. With [rtk](https://github.com/rtk-ai/rtk) installed, the test and type-check runs it parses go through `rtk pipe`. | Less input on every later request |
 | ✂️ **Speak less** | One short system-prompt section asks for no preamble, recaps or closers, and for batched commands and partial file reads. `adhd` mode puts the next action first, after [i-have-adhd](https://github.com/ayghri/i-have-adhd). | Fewer output tokens, which cost 5× input |
 
-A **Model router** pane (beside the chat in the desktop app) shows the current model, savings and turns per model, live.
+A **Model router** pane (beside the chat in the desktop app) shows the current model, savings and turns per model, live, and every subagent the session starts: its model, whether it is running, done or failed, its requests and cost. Click one to open its transcript.
 
 `/router` shows what routing saved in dollars and how many tokens compression kept out of the context, for this session and all time.
 
