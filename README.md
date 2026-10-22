@@ -46,7 +46,7 @@ These are the router's own numbers, for a session on Claude Opus 5.5 with a warm
 | 150k tokens | **stays on Opus**: switching costs $0.42 more | **stays on Opus**: Haiku's long-context rate makes it $0.063 more |
 | 400k tokens | **stays on Opus**: switching costs $1.37 more | **stays on Opus**: $0.23 more |
 
-Opus 5.5 and Sonnet 5.5 read cache at the same $0.20/MTok, so mid-session Sonnet saves only on output, and writing the conversation into its cache costs more than that. Haiku 5.5 is 40× cheaper than Opus on input up to 100K tokens, so dropping to it pays even after the rewrite; past 100K it bills a long-context rate five times higher, and a warm Opus is cheaper again. When a model's cache has lapsed (an hour idle), both sides pay the write and the cheaper model wins. Going back to a model whose cache is still warm costs only what changed since. The cache also belongs to the request's effort, so on your own model the router keeps your `/effort` and never rebuilds the cache by changing it.
+Opus 5.5 and Sonnet 5.5 read cache at the same $0.20/MTok, so mid-session Sonnet saves only on output, and writing the conversation into its cache costs more than that. Haiku 5.5 is 40× cheaper than Opus on input up to 100K tokens, so dropping to it pays even after the rewrite; past 100K it bills a long-context rate five times higher, and a warm Opus is cheaper again. When a model's cache has lapsed (an hour idle), both sides pay the write and the cheaper model wins. Going back to a model whose cache is still warm costs only what changed since. The cache also belongs to the request's effort, so changing effort rewrites it exactly like changing model; on your own model the router keeps your `/effort` unless a task's own effort costs nothing more.
 
 Harder tasks are about quality, not money: by default the router moves up a tier when a prompt needs it, and shows what the switch cost with the cache re-write. Set `escalate: suggest` to only name the tier in the status line and decide yourself. A `!tier` prefix always switches.
 
@@ -68,16 +68,19 @@ flowchart LR
     E -- no --> K
 ```
 
-- **Overrides:** start a prompt with `!haiku`, `!sonnet`, `!opus` (or `!fable`) to force it. The prefix is removed before the model sees the prompt, also while routing is off.
-- **Follow-ups** ("ok", "dalej", "do it", or three words the rules don't read) keep the current model. A short prompt the rules do read ("debug flaky test") is routed like any other.
+- **Overrides:** start a prompt with `!haiku`, `!sonnet`, `!opus` (or `!fable`) to force it. `!+` moves one tier up from the current route, `!-` one tier down. The prefix is removed before the model sees the prompt, also while routing is off.
+- **Follow-ups** ("ok", "dalej", "do it", or three words the rules don't read) keep the current model. A short prompt the rules do read ("debug flaky test") is routed like any other. A dissatisfied one ("znowu źle", "popraw to", "still wrong") escalates one tier above the current route.
+- **Not only code:** the local rules also read translation and text editing, spreadsheets (Excel/CSV), Notion/Confluence, multi-step browser work (Chrome, forms, portals), email, API/automation and agent work. A plain git command (`push`, `commit`, `pull`, `fetch`, `status`) is Haiku; a pull request, force-push, rebase or merge conflict is Sonnet. The size signals matter too: four or more code files, numbered steps, a long brief, a stack trace, or tools that kept failing in the previous turn move the task up.
+- **Research is bounded by policy:** a single lookup ("look up the price", "sprawdź cenę") is Haiku; anything broader ("research the market", "zbadaj temat", "porównaj rozwiązania") is Sonnet. Research never goes to Opus; a real failure ("zbadaj wyciek pamięci", "why does it crash") is a debug task, not research.
+- **Negations are read:** "don't refactor, just translate", "nie zmieniaj kodu", "bez refaktoryzacji" cancel the verb they sit on, so the task is not routed by a word the person explicitly ruled out.
 - **`/model` wins:** change the model by hand and routing stops for the session. `/router on` resumes.
 - **Stuck detection:** three failed or identical tool calls in a row move the turn up one tier (or suggest it).
 - **Subagents:** a general-purpose subagent that names no model gets the turn's cheaper tier. Other agent types may pin a model in their definition, so they, forks and Opus turns are left alone.
 - **Skills** (`/my-skill args`) are routed by what you typed and the command's own description, not by the skill's instructions. Claude Code's own prompt commands (`/code-review`, `/security-review`, `/init`) and MCP prompts run on your `/model`.
 - **Prompts typed during a turn** are routed when their own turn starts.
-- **Effort per task** (`effortMode: auto`): each tier has a base effort (Haiku `low`, Sonnet `medium`, Opus `high`, Fable `xhigh`, each configurable), and a task moves one step from it: a confident diagnosis, architecture or security task up, a translation or rename down. The cache belongs to model *and* effort, so a new effort goes through the same cost math as a model switch: on your own model your `/effort` stays while its cache is warm. The router never sends `max` (a `max` setting is sent as `xhigh`). Crew workers keep the effort they were registered with. `effortMode: fixed` uses the tier's effort only.
-- **Ultracode** for the hardest tasks (a confident Opus/Fable verdict: architecture, unexplained failure, audit, wide migration): `suggest` names the `ultracode` keyword in the status line, `auto` adds it to the prompt so Claude Code runs it as a multi-agent workflow (dearer per turn, often done sooner and cheaper overall), `off` says nothing.
-- **Learns from you** (`adapt: on`): a `!tier` over what the rules picked, a `/model` or `/effort` change right after a routed prompt, and a tool-failure escalation shift that kind of task (its rule, or `judge`) by up to ±2 tiers or effort steps. Corrections fade with a two-week half-life and stay on your machine; `/router` shows them (`learned: translation +1 tier`), `/router reset` clears them.
+- **Effort per task** (`effortMode: auto`): each tier has a base effort (Haiku `low`, Sonnet `medium`, Opus `high`, Fable `xhigh`, each configurable), and a task moves one step from it: a confident diagnosis, architecture or security task up, a translation or rename down. Desktop shows `xhigh` as **Extra**. The cache belongs to model *and* effort, so a new effort goes through the same cost math as a model switch: on your own model your `/effort` stays while its cache is warm. `effortMode: task` always takes the task's effort, even when the cache rewrite costs more; `effortMode: fixed` uses the tier's effort only. The router never sends `max` or `ultracode` as an effort. Crew workers keep the effort they were registered with.
+- **Ultracode** for the hardest tasks (a confident Opus/Fable verdict: architecture, unexplained failure, audit, wide migration, production incident): `suggest` names the `ultracode` keyword in the status line, `auto` adds it to the prompt so Claude Code runs it as a multi-agent workflow (dearer per turn, often done sooner and cheaper overall), `off` says nothing. In Desktop, **Ultracode** is the option above Max in the effort picker; the router automates that switch instead of ever sending Max.
+- **Learns from you** (`adapt: on`): a `!tier`, `!+` or `!-` over what the rules picked, a `/model` or `/effort` change right after a routed prompt, and a tool-failure escalation shift that kind of task (its rule, or `judge`) by up to ±2 tiers or effort steps. Corrections fade with a two-week half-life and stay on your machine; `/router` shows them (`learned: translation +1 tier`), `/router reset` clears them.
 - **The engine's own fallback** (a refusal or an overload switching the model) pauses routing until the next prompt and does not count as a manual `/model`.
 
 ## Crew mode: one orchestrator, three warm workers
@@ -125,16 +128,27 @@ With [rtk](https://github.com/rtk-ai/rtk) on your PATH, plain `cargo test`, `pyt
 
 ## Commands
 
+`/router-help` is the directory: it lists every command and what it is for. The short commands are aliases for the same handlers, so `/router why` and `/router-why` do the same thing.
+
 | | |
 |---|---|
 | `/router` | route in force, savings this session and all time, switches vs. holds, compression totals |
-| `/router panel` | open the live pane |
-| `/router style terse\|adhd\|off` | answer style for this session |
-| `/router off` · `/router on` | stop or resume routing (or crew) for this session |
-| `/router log` | the last 50 routing decisions as JSON lines, for tuning |
-| `/router reset` | clear all-time totals, learned turn profiles, learned corrections and the log |
+| `/router-help` | the directory: every command and why you would use it |
+| `/router-start` | check the install and turn routing on with sane defaults |
+| `/router-why` | explain the last decision in plain language: the rule or judge, the tier and effort it wanted, whether the cache math kept the current model, and whether Ultracode was suggested |
+| `/router-effort [auto\|task\|fixed]` | show the effort policy; set the mode for this session |
+| `/router-ultracode [suggest\|auto\|off]` | show or set the Ultracode switch for this session |
+| `/router-log` | the last 50 routing decisions as JSON lines, for tuning |
+| `/router-panel` | open the live pane |
+| `/router-style terse\|adhd\|off` | answer style for this session |
+| `/router-off` · `/router-on` | stop or resume routing (or crew) for this session |
+| `/router-reset` | clear all-time totals, learned turn profiles, learned corrections and the decision log |
+
+The `/router <sub>` forms (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router start`, `/router help`) work too.
 
 The status line shows each decision (`router: Sonnet·medium (rule .86) · saved ≈$0.41`), and a note beneath each answer names the model and why, for surfaces with no status line.
+
+`/router why` is the answer to "why is it still on Opus?" or "why did the effort not drop?": it separates a misread task from the cache math. Every decision is also mirrored to `~/.claude/model-router/decisions.json` (the last 500, prompts truncated to 280 characters), so a bad route or a bad effort can be copied into `tests/classify.test.ts` as a labelled case.
 
 ## Settings
 
@@ -153,10 +167,10 @@ Shown when you install, and later under `/config`:
 | `layaUrl` | empty | a running [laya-serve](https://github.com/NandhaKishorM/laya) classifies unclear prompts locally, before the judge |
 | `layaApiKey` | empty | sent to laya-serve as a Bearer token |
 | `enableFable` | `false` | route proofs and new theories to Claude Fable 5.1 |
-| `haikuEffort` … `fableEffort` | `low` `medium` `high` `xhigh` | base effort per tier (never `max`) |
-| `effortMode` | `auto` | effort per task within the tier, when the cache math allows; `fixed`: the tier's effort |
+| `haikuEffort` … `fableEffort` | `low` `medium` `high` `xhigh` | base effort per tier; Desktop calls `xhigh` Extra. Never `max` or Ultracode |
+| `effortMode` | `auto` | effort per task within the tier, when the cache math allows; `task`: always take the task's effort, even at a cache cost; `fixed`: the tier's effort |
 | `ultracode` | `suggest` | `auto`: add `ultracode` to the hardest prompts; `off` |
-| `adapt` | `on` | learn routing shifts from your corrections; `off` |
+| `adapt` | `on` | learn routing shifts from `!tier`, `!+`, `!-`, `/model` and `/effort` corrections; `off` |
 | `showNote` | `true` | the line beneath each answer |
 
 Model ids per tier are at the top of [`model-router/hooks/register.ts`](model-router/hooks/register.ts). On Bedrock or Vertex, put your provider's ids there.

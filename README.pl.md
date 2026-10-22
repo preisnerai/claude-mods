@@ -39,25 +39,27 @@ Liczby z modelu kosztów routera, dla sesji na Claude Opus 5.5 z ciepłym cache:
 | 150 tys. | **zostaje**: +$0.42 | **zostaje**: +$0.063 (stawka Haiku powyżej 100 tys.) |
 | 400 tys. | **zostaje**: +$1.37 | **zostaje**: +$0.23 |
 
-Opus 5.5 i Sonnet 5.5 czytają cache po tej samej cenie $0.20/MTok, więc w środku sesji Sonnet oszczędza tylko na wyjściu, a zapis rozmowy do jego cache kosztuje więcej. Haiku 5.5 jest 40× tańszy od Opusa na wejściu do 100 tys. tokenów, więc zejście na niego opłaca się nawet z zapisem; powyżej 100 tys. płaci stawkę 5× wyższą i ciepły Opus znów jest tańszy. Gdy cache modelu wygasł (godzina bezczynności), obie strony płacą za zapis i wygrywa tańszy model. Cache zależy też od effort, więc na Twoim modelu router zostawia Twój `/effort`.
+Opus 5.5 i Sonnet 5.5 czytają cache po tej samej cenie $0.20/MTok, więc w środku sesji Sonnet oszczędza tylko na wyjściu, a zapis rozmowy do jego cache kosztuje więcej. Haiku 5.5 jest 40× tańszy od Opusa na wejściu do 100 tys. tokenów, więc zejście na niego opłaca się nawet z zapisem; powyżej 100 tys. płaci stawkę 5× wyższą i ciepły Opus znów jest tańszy. Gdy cache modelu wygasł (godzina bezczynności), obie strony płacą za zapis i wygrywa tańszy model. Cache zależy też od effort, więc **zmiana effortu zrzuca cache tak samo jak zmiana modelu**; na Twoim modelu router zostawia Twój `/effort`, chyba że effort zadania nie kosztuje więcej.
 
 Trudniejsze zadania to kwestia jakości, nie pieniędzy: domyślnie router podnosi poziom, gdy prompt tego wymaga, i pokazuje koszt zmiany. Ustaw `escalate: suggest`, żeby router tylko podpowiadał w linii statusu.
 
 ## Jak prompt jest kierowany
 
-1. Prefiks `!haiku`, `!sonnet`, `!opus` (lub `!fable`) wymusza model; prefiks jest usuwany z promptu.
-2. Krótka kontynuacja („ok”, „dalej”, „zrób to”) zostaje na bieżącym modelu.
-3. Lokalne reguły PL/EN (0 tokenów): tłumaczenie, literówka, zmiana nazwy → Haiku; nowa funkcja, test, refaktor → Sonnet; „dlaczego… nie działa”, wyciek pamięci, architektura, audyt bezpieczeństwa → Opus.
-4. Niejasne prompty: opcjonalnie [laya-serve](https://github.com/NandhaKishorM/laya) lokalnie, potem sędzia Haiku.
-5. Rachunek cache decyduje, czy przełączyć.
+1. Prefiks `!haiku`, `!sonnet`, `!opus` (lub `!fable`) wymusza model; `!+` podnosi o jeden tier od bieżącego, `!-` obniża. Prefiks jest usuwany z promptu.
+2. Krótka kontynuacja („ok”, „dalej”, „zrób to”) zostaje na bieżącym modelu. Niezadowolenie („znowu źle”, „popraw to”, „nie o to chodziło”) eskaluje o jeden tier.
+3. Lokalne reguły PL/EN (0 tokenów): tłumaczenie, literówka, zmiana nazwy → Haiku; nowa funkcja, test, refaktor → Sonnet; „dlaczego… nie działa”, wyciek pamięci, architektura, audyt bezpieczeństwa → Opus. Reguły czytają też pracę nie-kodową: teksty, Excel/CSV, Notion/Confluence, Chrome i formularze, maile, API i automatyzacje. Prosty git (`push`, `commit`, `pull`, `fetch`, `status`) → Haiku; PR, force-push, rebase albo konflikt merge → Sonnet.
+4. Research ma twardą politykę: proste sprawdzenie („sprawdź cenę”, „look up the price”) → Haiku; szerszy research („zbadaj temat”, „research rynku”, „porównaj rozwiązania”) → Sonnet. Research nigdy nie idzie do Opusa; „zbadaj wyciek pamięci” to debug, nie research.
+5. Sygnały rozmiaru: cztery i więcej plików kodu, numerowane kroki, długi brief, stack trace, a także nieudane narzędzia w poprzedniej turze podnoszą zadanie. Negacje („nie refaktoruj”, „bez refaktoryzacji”) anulują słowo, którego dotyczą.
+6. Niejasne prompty: opcjonalnie [laya-serve](https://github.com/NandhaKishorM/laya) lokalnie, potem sędzia Haiku z progiem pewności; poniżej progu zostaje bieżący model.
+7. Rachunek cache decyduje, czy przełączyć model albo effort.
 
 Dodatkowo: ręczny `/model` wyłącza routing do końca sesji (`/router on` przywraca), a automatyczny fallback silnika tylko go wstrzymuje do następnego promptu; trzy nieudane lub identyczne wywołania narzędzi z rzędu podnoszą poziom; subagent general-purpose bez wskazanego modelu dostaje tańszy poziom tury (inne typy agentów mogą mieć własny model i nie są ruszane); skille (`/mój-skill`) są kierowane po wpisanej linii i opisie komendy; prompty wpisane w trakcie tury są kierowane, gdy zaczyna się ich tura.
 
-**Effort per zadanie** (`effortMode: auto`): każdy poziom ma bazowy effort, a zadanie przesuwa go o krok: pewna diagnoza, architektura czy bezpieczeństwo w górę, tłumaczenie czy zmiana nazwy w dół. Cache zależy od modelu *i* effort, więc zmiana effort przechodzi ten sam rachunek co przełączenie modelu: na Twoim modelu Twój `/effort` zostaje, póki cache jest ciepły. Router nigdy nie wysyła `max` (ustawienie `max` idzie jako `xhigh`). Workery crew zachowują effort, z którym je zarejestrowano. `effortMode: fixed` to stary effort per poziom.
+**Effort per zadanie** (`effortMode: auto`): każdy poziom ma bazowy effort, a zadanie przesuwa go o krok: pewna diagnoza, architektura czy bezpieczeństwo w górę, tłumaczenie czy zmiana nazwy w dół. Desktop nazywa `xhigh` **Extra**. Cache zależy od modelu *i* effort, więc zmiana effortu przechodzi ten sam rachunek co przełączenie modelu: na Twoim modelu Twój `/effort` zostaje, póki cache jest ciepły. `effortMode: task` zawsze bierze effort zadania, nawet gdy przebudowa cache kosztuje więcej; `effortMode: fixed` to stary effort per poziom. Router nigdy nie wysyła `max` ani `ultracode` jako effortu. Workery crew zachowują effort, z którym je zarejestrowano.
 
-**Ultracode** dla najtrudniejszych zadań (pewny werdykt Opus/Fable: architektura, niewyjaśniony błąd, audyt, szeroka migracja): `suggest` podpowiada słowo `ultracode` w linii statusu, `auto` dopisuje je do promptu (workflow wieloagentowy: droższa tura, ale często szybciej i taniej w sumie), `off` milczy.
+**Ultracode** dla najtrudniejszych zadań (pewny werdykt Opus/Fable: architektura, niewyjaśniony błąd, audyt, szeroka migracja, incydent produkcyjny): `suggest` podpowiada słowo `ultracode` w linii statusu, `auto` dopisuje je do promptu (workflow wieloagentowy: droższa tura, ale często szybciej i taniej w sumie), `off` milczy. W Desktopie **Ultracode** to opcja nad Maxem w pickerze effortu; router automatyzuje ten przełącznik zamiast wysyłać Max.
 
-**Uczy się Ciebie** (`adapt: on`): `!poziom` wbrew regułom, `/model` lub `/effort` zmieniony zaraz po skierowanym prompcie i eskalacja po nieudanych narzędziach przesuwają dany rodzaj zadania (jego regułę albo `judge`) o maks. ±2 poziomy lub kroki effort. Korekty wygasają (połowa po dwóch tygodniach) i zostają na Twoim komputerze; `/router` je pokazuje, `/router reset` czyści.
+**Uczy się Ciebie** (`adapt: on`): `!poziom`, `!+` lub `!-` wbrew regułom, `/model` lub `/effort` zmieniony zaraz po skierowanym prompcie i eskalacja po nieudanych narzędziach przesuwają dany rodzaj zadania (jego regułę albo `judge`) o maks. ±2 poziomy lub kroki effort. Korekty wygasają (połowa po dwóch tygodniach) i zostają na Twoim komputerze; `/router` je pokazuje, `/router reset` czyści.
 
 Licznik oszczędności wycenia każde zapytanie dwa razy: tak, jak poszło, i tak, jak poszłoby na Twoim `/model` z jego własnym cache. Zapis cache po przełączeniu liczy się więc jako koszt.
 
@@ -73,12 +75,25 @@ Przetestowane na żywo: dwa zadania dla `worker-haiku` w jednej sesji uruchomił
 
 | | |
 |---|---|
+`/router-help` to spis wszystkich komend z wyjaśnieniem, po co są. Krótkie komendy to aliasy tych samych handlerów — `/router why` i `/router-why` robią to samo.
+
+| | |
+|---|---|
 | `/router` | aktualny model, oszczędności w sesji i łącznie, przełączenia i wstrzymania, kompresja |
-| `/router panel` | otwórz panel na żywo |
-| `/router style terse\|adhd\|off` | styl odpowiedzi w tej sesji |
-| `/router off` · `/router on` | wyłącz lub włącz routing w tej sesji |
-| `/router log` | ostatnie 50 decyzji jako JSON, do strojenia |
-| `/router reset` | wyczyść sumy, wyuczone profile tur, wyuczone korekty i log |
+| `/router-help` | spis wszystkich komend i po co ich używać |
+| `/router-start` | sprawdza instalację i włącza routing z sensownymi domyślnymi |
+| `/router-why` | po ludzku wyjaśnia ostatnią decyzję: regułę albo sędziego, tier i effort, których chciał, czy rachunek cache zatrzymał bieżący model i czy zasugerowano Ultracode |
+| `/router-effort [auto\|task\|fixed]` | pokazuje politykę effortu; ustawia tryb w tej sesji |
+| `/router-ultracode [suggest\|auto\|off]` | pokazuje lub ustawia przełącznik Ultracode w tej sesji |
+| `/router-log` | ostatnie 50 decyzji jako JSON, do strojenia |
+| `/router-panel` | otwórz panel na żywo |
+| `/router-style terse\|adhd\|off` | styl odpowiedzi w tej sesji |
+| `/router-off` · `/router-on` | wyłącz lub włącz routing w tej sesji |
+| `/router-reset` | wyczyść sumy, wyuczone profile tur, wyuczone korekty i log decyzji |
+
+Formy `/router <sub>` (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router start`, `/router help`) też działają.
+
+`/router why` odpowiada na „dlaczego nadal Opus?” albo „dlaczego effort nie spadł?”: oddziela błędny odczyt zadania od rachunku cache. Każda decyzja trafia też do `~/.claude/model-router/decisions.json` (ostatnie 500, prompt skrócony do 280 znaków), więc zły wybór modelu albo effortu można skopiować do `tests/classify.test.ts` jako oznaczony przypadek.
 
 Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `layaApiKey`, `enableFable`, effort per poziom, `effortMode`, `ultracode`, `adapt`, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
 

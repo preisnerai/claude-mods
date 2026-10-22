@@ -15,6 +15,7 @@ test('effort moves within the tier: deep up, trivial down', async () => {
   expect(effortFor({ tier: 'opus', confidence: 0.7, source: 'judge', why: 'judge' }, 'high')).toBe('high')
   expect(effortFor({ tier: 'sonnet', confidence: 0.9, source: 'rule', why: 'translation' }, 'medium')).toBe('low')
   expect(effortFor({ tier: 'haiku', confidence: 0.9, source: 'rule', why: 'rename' }, 'low', -2)).toBe('low')
+  expect(effortFor({ tier: 'haiku', confidence: 0.9, source: 'rule', why: 'simple research, research' }, 'low')).toBe('low')
 })
 
 test('only confident hardest tasks are ultracode candidates', async () => {

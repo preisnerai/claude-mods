@@ -1,7 +1,7 @@
 {
   "name": "model-router",
-  "version": "1.5.0",
-  "description": "Cache-aware model routing for Claude Code: each prompt goes to Haiku, Sonnet or Opus by what it needs, and a cheaper model only when that pays after the prompt-cache re-write. Crew mode adds warm per-model workers. Bash output is compressed rtk-style and answers drop the filler.",
+  "version": "1.6.0",
+  "description": "Cache-aware model routing for Claude Code Desktop: each prompt goes to Haiku, Sonnet or Opus by what it needs, and a cheaper model or effort only when that pays after the prompt-cache re-write. Rules read non-code work too, research is Sonnet at most, !+ and !- nudge the tier, /router-help lists every command, /router why explains the decision, and the hardest tasks can run as Ultracode. Crew mode adds warm per-model workers. Bash output is compressed rtk-style and answers drop the filler.",
   "author": {
     "name": "preisnerai"
   },
@@ -123,7 +123,7 @@
     "haikuEffort": {
       "type": "string",
       "title": "Haiku effort",
-      "description": "Base effort when the router moves you to Haiku (on your own model your /effort stays, so its cache stays too). Under effortMode auto a task moves one step from it. Never max: a max here is sent as xhigh.",
+      "description": "Base effort when the router moves you to Haiku (on your own model your /effort stays, so its cache stays too). Under effortMode auto a task moves one step from it. Never max or ultracode: the router tops out at xhigh (Extra in Desktop); Ultracode is a separate workflow switch.",
       "options": [
         "low",
         "medium",
@@ -135,7 +135,7 @@
     "sonnetEffort": {
       "type": "string",
       "title": "Sonnet effort",
-      "description": "Base effort when the router moves you to Sonnet (on your own model your /effort stays, so its cache stays too). Under effortMode auto a task moves one step from it. Never max: a max here is sent as xhigh.",
+      "description": "Base effort when the router moves you to Sonnet (on your own model your /effort stays, so its cache stays too). Under effortMode auto a task moves one step from it. Never max or ultracode: the router tops out at xhigh (Extra in Desktop); Ultracode is a separate workflow switch.",
       "options": [
         "low",
         "medium",
@@ -147,7 +147,7 @@
     "opusEffort": {
       "type": "string",
       "title": "Opus effort",
-      "description": "Base effort when the router moves you to Opus (on your own model your /effort stays, so its cache stays too). Under effortMode auto a task moves one step from it. Never max: a max here is sent as xhigh.",
+      "description": "Base effort when the router moves you to Opus (on your own model your /effort stays, so its cache stays too). Under effortMode auto a task moves one step from it. Never max or ultracode: the router tops out at xhigh (Extra in Desktop); Ultracode is a separate workflow switch.",
       "options": [
         "low",
         "medium",
@@ -159,7 +159,7 @@
     "fableEffort": {
       "type": "string",
       "title": "Fable effort",
-      "description": "Base effort when the router moves you to Fable (on your own model your /effort stays, so its cache stays too). Under effortMode auto a task moves one step from it. Never max: a max here is sent as xhigh.",
+      "description": "Base effort when the router moves you to Fable (on your own model your /effort stays, so its cache stays too). Under effortMode auto a task moves one step from it. Never max or ultracode: the router tops out at xhigh (Extra in Desktop); Ultracode is a separate workflow switch.",
       "options": [
         "low",
         "medium",
@@ -171,9 +171,10 @@
     "effortMode": {
       "type": "string",
       "title": "Effort per task",
-      "description": "auto picks the effort per prompt within its tier (a confident diagnosis, architecture or security task one step up, a translation or rename one down), taken only when the cache math says it pays, since the cache belongs to model and effort. fixed: the tier's effort, as before. The router never sends max. Crew workers keep their registered effort.",
+      "description": "auto picks the effort per prompt within its tier (a confident diagnosis, architecture or security task one step up, a translation or rename one down), taken only when the cache math says it pays, since the cache belongs to model and effort: changing effort rewrites the conversation cache exactly like changing model. task: always take the task's effort, even when the cache rewrite costs more, when effort matters more than the cache. fixed: the tier's effort, as before. The router never sends max or ultracode. Crew workers keep their registered effort.",
       "options": [
         "auto",
+        "task",
         "fixed"
       ],
       "default": "auto"
@@ -181,7 +182,7 @@
     "ultracode": {
       "type": "string",
       "title": "Ultracode for the hardest tasks",
-      "description": "For confident Opus/Fable tasks (architecture, unexplained failure, audit, wide migration): suggest names the ultracode keyword in the status line; auto adds it to the prompt (multi-agent workflow: dearer per turn, often done sooner and cheaper overall); off says nothing.",
+      "description": "For confident Opus/Fable tasks (architecture, unexplained failure, audit, wide migration): suggest names the ultracode keyword in the status line; auto adds it to the prompt (multi-agent workflow: dearer per turn, often done sooner and cheaper overall); off says nothing. In Desktop, Ultracode is the option above Max in the effort picker; this setting automates that switch for the hardest tasks, while the router itself never sends Max.",
       "options": [
         "suggest",
         "auto",
@@ -192,7 +193,7 @@
     "adapt": {
       "type": "string",
       "title": "Learn from your corrections",
-      "description": "on: a !tier override, a /model or /effort change right after a routed prompt and tool-failure escalations shift that kind of task by up to 2 tiers or effort steps, fading over weeks. Kept on this machine only; /router shows it, /router reset clears it.",
+      "description": "on: a !tier, !+ or !- override, a /model or /effort change right after a routed prompt and tool-failure escalations shift that kind of task by up to 2 tiers or effort steps, fading over weeks. Kept on this machine only; /router shows it, /router reset clears it.",
       "options": [
         "on",
         "off"

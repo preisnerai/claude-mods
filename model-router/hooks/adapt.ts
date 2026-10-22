@@ -2,15 +2,34 @@ import type { Effort, Tier } from '../types'
 import { ORDER, rank } from './classify'
 import type { Verdict } from './classify'
 
-// The efforts the router may send. Never `max`: it costs the most and is the person's own call, by /effort.
+// The efforts the router may send. Never `max` or `ultracode`: the router tops out at xhigh (Extra in Desktop);
+// Ultracode is a workflow switch, added as a keyword, not an effort level sent per request.
 export const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh']
 
-/** Any effort brought within what the router sends: `max` (or anything past xhigh) becomes xhigh. */
+/** Any effort brought within what the router sends: `max`, `ultracode` (or anything past xhigh) becomes xhigh. */
 export function clampEffort(value: unknown, fallback: Effort): Effort {
-  if (value === 'max') {
+  if (value === 'max' || value === 'ultracode') {
     return 'xhigh'
   }
   return (EFFORTS as readonly unknown[]).includes(value) ? (value as Effort) : fallback
+}
+
+/** The Desktop names for effort, so a status line reads like the picker. */
+export function effortLabel(value: unknown): string {
+  const key = String(value ?? '').toLowerCase()
+  if (key === '') {
+    return 'auto'
+  }
+  if (key === 'xhigh') {
+    return 'Extra'
+  }
+  if (key === 'max') {
+    return 'Max'
+  }
+  if (key === 'ultracode') {
+    return 'Ultracode'
+  }
+  return key
 }
 
 function stepEffort(e: Effort, by: number): Effort {
@@ -18,8 +37,45 @@ function stepEffort(e: Effort, by: number): Effort {
 }
 
 // Rule labels that say a task is harder, or easier, than most of its tier.
-const DEEP = new Set(['unexplained failure', 'diagnosis', 'hard bug', 'architecture', 'security', 'investigation', 'migration plan', 'proof', 'research'])
-const LIGHT = new Set(['translation', 'typo', 'rename', 'version bump', 'formatting', 'format conversion', 'commit message', 'quick question', 'summary'])
+const DEEP = new Set([
+  'unexplained failure',
+  'diagnosis',
+  'hard bug',
+  'architecture',
+  'security',
+  'investigation',
+  'migration plan',
+  'proof',
+  'formal research',
+  'research',
+  'production incident',
+  'deep review',
+  'business diagnosis',
+  'legal review',
+  'contract drafting',
+  'automation design',
+  'data analysis',
+])
+const LIGHT = new Set([
+  'translation',
+  'typo',
+  'rename',
+  'version bump',
+  'formatting',
+  'format conversion',
+  'commit message',
+  'quick question',
+  'summary',
+  'short prose',
+  'simple research',
+  'text polish',
+  'email',
+  'simple sheet',
+  'simple formula',
+  'simple sheet edit',
+  'simple browser',
+  'read a file',
+])
 
 /** What a verdict is learned under: its strongest rule's label, or how it was judged. */
 export function categoryOf(v: Verdict): string {
@@ -37,7 +93,9 @@ function labels(v: Verdict): string[] {
 export function effortFor(v: Verdict, base: Effort, learned = 0): Effort {
   const l = labels(v)
   let by = learned
-  if (l.some(x => DEEP.has(x)) && v.confidence >= 0.8) {
+  if (l.includes('simple research')) {
+    by -= 1
+  } else if (l.some(x => DEEP.has(x)) && v.confidence >= 0.8) {
     by += 1
   } else if (l.length > 0 && l.every(x => LIGHT.has(x))) {
     by -= 1
@@ -46,7 +104,19 @@ export function effortFor(v: Verdict, base: Effort, learned = 0): Effort {
 }
 
 // The hardest work: where a multi-agent run often finishes sooner, and so cheaper, despite dearer turns.
-const HARDEST = new Set(['unexplained failure', 'hard bug', 'architecture', 'security', 'migration plan', 'wide change', 'investigation', 'proof', 'research'])
+const HARDEST = new Set([
+  'unexplained failure',
+  'hard bug',
+  'architecture',
+  'security',
+  'migration plan',
+  'wide change',
+  'investigation',
+  'proof',
+  'formal research',
+  'production incident',
+  'deep review',
+])
 
 export function isHardest(v: Verdict): boolean {
   return rank(v.tier) >= rank('opus') && v.source === 'rule' && v.confidence >= 0.85 && labels(v).some(x => HARDEST.has(x))

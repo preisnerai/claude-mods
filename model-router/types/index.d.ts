@@ -3,7 +3,7 @@ export type Tier = 'haiku' | 'sonnet' | 'opus' | 'fable'
 /** `Tier` under a name the engine's own module does not use (inside `declare module 'claude-code'`, `Tier` is the engine's). */
 export type ModelTier = Tier
 
-/** What the router sends. Never `max`: that is the person's own call, by /effort. */
+/** What the router sends. Never `max` or `ultracode`: those are the person's own call in Desktop. */
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh'
 
 /** How a tier was chosen: a local rule, the judge model, laya-serve, a `!tier` prefix, a short follow-up. */
@@ -51,7 +51,7 @@ export type Ledger = {
 export type Sent = { model: string; effort: string | number | null }
 
 /** A prompt typed while a turn ran, routed when its own turn starts. */
-export type Queued = { text: string; tier: Tier | null }
+export type Queued = { text: string; tier: Tier | null; why?: string; nudge?: number }
 
 declare module 'claude-code' {
   interface PluginState {

@@ -114,6 +114,16 @@ test('!haiku delegates instead of switching, and the prefix is stripped', CREW, 
   expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5'])
 })
 
+test('!+ on a fresh crew session lifts the orchestrator, not the session /model', CREW, async ($, on) => {
+  world(on)
+  await start($)
+
+  const entered = await submit($, '!+ refactor the auth module')
+
+  expect(entered.text).toBe('refactor the auth module')
+  expect(entered.context?.at(-1)).toContain('hand all of it to worker-opus')
+})
+
 test('a worker runs on its own model, and a second one of the same model is turned to the warm one', CREW, async ($, on) => {
   const w = world(on)
   await start($)

@@ -16,7 +16,7 @@ function world(on: On, opts: { judge?: string; judgeFails?: boolean; model?: str
   on('session.model', () => ({ value: sessionModel }))
   on('session.messages', () => ({ value: [] }))
   on('session.id', () => ({ value: 'session-0123456789' }))
-  on('command.register', () => ({ value: { command: 'router' } }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('command.list', () => ({ value: (opts.commands ?? []) as never }))
   on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/dev' : undefined }))
@@ -69,10 +69,28 @@ function router($: Engine, args: string) {
   return $.command.run({ command: 'router', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
 }
 
+function command($: Engine, name: string, args = '') {
+  return $.command.run({ command: name, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+}
+
 type Stored = { message?: { content: { content?: unknown }[] } }
 
 function storedText(row: Stored) {
   return row.message?.content[0]?.content
+}
+
+// The engine resolves a written path against the host drive: compare its tail, not its separator.
+function writtenTail(written: Record<string, string>, path: string): string | undefined {
+  const key = Object.keys(written).find(k => k.replace(/\\/g, '/').endsWith(path))
+  return key === undefined ? undefined : written[key]
+}
+
+function teeFiles(written: Record<string, string>): string[] {
+  return Object.keys(written)
+    .map(k => k.replace(/\\/g, '/'))
+    .map(k => k.slice(k.indexOf('/model-router/tee/')))
+    .filter(k => k.startsWith('/model-router/tee/'))
+    .sort()
 }
 
 function submit($: Engine, text: string) {
@@ -349,7 +367,7 @@ test('Bash output is compressed before it is stored, and kept whole on disk', { 
   expect(text).toContain('Received: 52')
   expect(text).toContain('(400 passing test lines hidden)')
   expect(text).toContain("full output: '/home/dev/.claude/model-router/tee/0.txt'")
-  expect(w.written['/home/dev/.claude/model-router/tee/0.txt']).toBe(`# model-router: full output of toolu_1: npm test\n${raw}`)
+  expect(writtenTail(w.written, '/home/dev/.claude/model-router/tee/0.txt')).toBe(`# model-router: full output of toolu_1: npm test\n${raw}`)
   expect(text.length < raw.length / 10).toBe(true)
 
   const report = await router($, '')
@@ -556,7 +574,7 @@ test('two results stored at once get two tee files, and a result saving under 10
   await $.tool.call({ tool: 'Bash', command: 'npm test', tool_use_id: 'a' } as never)
   await $.tool.call({ tool: 'Bash', command: 'npm test', tool_use_id: 'b' } as never)
   await Promise.all([append('a', big(1)), append('b', big(2))])
-  expect(Object.keys(w.written).sort()).toEqual(['/home/dev/.claude/model-router/tee/0.txt', '/home/dev/.claude/model-router/tee/1.txt'])
+  expect(teeFiles(w.written)).toEqual(['/model-router/tee/0.txt', '/model-router/tee/1.txt'])
 
   // 30 passing lines out of a 1.3k output: under 10% once the note is added.
   const small = [...Array.from({ length: 3 }, (_, i) => `  ✓ c${i}`), ...Array.from({ length: 40 }, (_, i) => `log line ${i} ${'z'.repeat(20)}`)].join('\n')
@@ -676,7 +694,7 @@ test('the tee ring wraps after its last slot', { options: { mode: 'route' } }, a
     await $.tool.call({ tool: 'Bash', command: 'npm test', tool_use_id: id } as never)
     await $.session.append({ door: 'tool-result', origin: { kind: 'tool', tool: 'Bash' }, uuid: id, message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: big(id.length) }] } })
   }
-  expect(Object.keys(w.written).sort()).toEqual(['/home/dev/.claude/model-router/tee/0.txt', '/home/dev/.claude/model-router/tee/199.txt'])
+  expect(teeFiles(w.written)).toEqual(['/model-router/tee/0.txt', '/model-router/tee/199.txt'])
 })
 
 test('the pane shows the route and the savings', { options: { mode: 'route' } }, async ($, on) => {
@@ -705,11 +723,11 @@ test('the router never sends max, even when a setting asks for it', { options: {
   expect(w.sent).toEqual([{ model: 'claude-opus-5-5', effort: 'xhigh' }])
 })
 
-test('effort is picked per task: a review on your own Opus goes at high while nothing is cached', { options: { mode: 'route' } }, async ($, on) => {
+test('effort is picked per task: a wide change on your own Opus goes at high while nothing is cached', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
 
-  await submit($, 'Review the changes in the auth module please')
+  await submit($, 'Update every caller across the monorepo')
   await step($)
 
   expect(w.sent).toEqual([{ model: 'claude-opus-5-5', effort: 'high' }])
@@ -722,7 +740,7 @@ test('an effort change on your own model passes the cache math: a warm cache kee
 
   await submit($, 'hi')
   await step($)
-  await submit($, 'Review the changes in the auth module please')
+  await submit($, 'Update every caller across the monorepo')
   await step($)
 
   expect(w.sent.map(s => s.effort)).toEqual(['xhigh', 'xhigh'])
@@ -732,7 +750,7 @@ test('after a task went out at its own effort, the next prompt is priced from th
   const w = world(on)
   await start($)
 
-  await submit($, 'Review the changes in the auth module please')
+  await submit($, 'Update every caller across the monorepo')
   await step($)
   w.setContext(60_000)
   await submit($, 'hi')
@@ -811,4 +829,203 @@ test('with adapt off nothing is learned', { options: { mode: 'route', adapt: 'of
   await submit($, 'Translate another sentence into French for me')
   await step($)
   expect(w.sent.at(-1)?.model).toBe('claude-haiku-5-5')
+})
+
+test('!+ lifts the current route one tier and !- lowers it', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, '!haiku rename usr to user')
+  await step($)
+  const up = await submit($, '!+ add a dark mode toggle to the settings page')
+  await step($)
+  const down = await submit($, '!- translate this error message into German')
+  await step($)
+
+  expect(up.text).toBe('add a dark mode toggle to the settings page')
+  expect(down.text).toBe('translate this error message into German')
+  expect(w.sent.map(s => s.model)).toEqual(['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'])
+})
+
+test('!+ at the top tier says so and leaves the model alone', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  const entered = await submit($, '!+ refactor the auth module')
+  await step($)
+
+  expect(entered.text).toBe('refactor the auth module')
+  expect(w.statuses.at(-1)).toContain('already at the strongest tier')
+  expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5'])
+})
+
+test('dissatisfaction escalates one tier above the current route', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+  await submit($, 'znowu źle')
+  await step($)
+
+  expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5', 'claude-opus-5-5'])
+  expect((await router($, 'why')).text).toContain('dissatisfied')
+})
+
+test('/router why explains a cache hold and the decision log lands on disk', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, 'Why does this deadlock only under load?')
+  w.setContext(400_000)
+  await step($)
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+
+  const why = await router($, 'why')
+  expect(why.text).toContain('stayed on Opus')
+  expect(why.text).toContain('cache math')
+  expect(why.text).toMatch(/cache re-write of \d+k tokens/)
+
+  const log = writtenTail(w.written, '/home/dev/.claude/model-router/decisions.json')
+  expect(log).toContain('"event": "route"')
+  expect(log).toContain('"tier": "sonnet"')
+  expect(log).toContain('"taken": false')
+})
+
+test('a judge below the confidence floor leaves the model on /model and /router why says why', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on, { judge: 'SONNET confidence 0.2' })
+  await start($)
+
+  await submit($, 'Help me with my thing in the app.')
+  await step($)
+
+  expect(w.judged.length).toBe(1)
+  expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5'])
+  expect((await router($, 'why')).text).toContain('no local rule or judge')
+})
+
+test('non-code work routes without the judge', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, 'Przygotuj arkusz Excel z podsumowaniem sprzedaży za Q3')
+  await step($)
+
+  expect(w.judged.length).toBe(0)
+  expect(w.sent).toEqual([{ model: 'claude-sonnet-5-5', effort: 'medium' }])
+})
+
+test('an effort change on your own model is priced like a model switch: a warm cache keeps Extra', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, 'hi')
+  w.setContext(60_000)
+  await step($)
+  await submit($, 'Update every caller across the monorepo')
+  await step($)
+
+  expect(w.sent.map(s => s.effort)).toEqual(['xhigh', 'xhigh'])
+  expect(w.statuses.at(-1)).toContain('task wanted high, kept Extra (cache)')
+  expect((await router($, 'why')).text).toContain('task wanted high, kept Extra (cache)')
+})
+
+test('!+ teaches the router that this kind of task wants more', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+  await submit($, '!+ add another settings toggle')
+  await step($)
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+
+  expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-opus-5-5'])
+  expect((await router($, '')).text).toContain('learned: bounded feature +1 tier')
+})
+
+test('effortMode task takes the task effort even when a warm cache would hold it', { options: { mode: 'route', effortMode: 'task' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, 'hi')
+  w.setContext(60_000)
+  await step($)
+  await submit($, 'Update every caller across the monorepo')
+  await step($)
+
+  expect(w.sent.map(s => s.effort)).toEqual(['xhigh', 'high'])
+  expect(w.statuses.at(-1)).toContain('effort high for this task')
+})
+
+test('/router-help is the directory of every command', { options: { mode: 'route' } }, async ($, on) => {
+  world(on)
+  await start($)
+
+  const help = await command($, 'router-help')
+  for (const name of ['/router', '/router-help', '/router-start', '/router-why', '/router-effort', '/router-ultracode', '/router-log', '/router-panel', '/router-style', '/router-off', '/router-on', '/router-reset']) {
+    expect(help.text).toContain(name)
+  }
+  expect(help.text).toContain('what each command is for')
+})
+
+test('/router-start turns routing on and says what is active', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await command($, 'router-off')
+
+  const started = await command($, 'router-start')
+  expect(started.text).toContain('ready')
+  expect(started.text).toContain('effort auto')
+
+  await submit($, 'Translate this error message into German please')
+  await step($)
+  expect(w.sent.map(s => s.model)).toEqual(['claude-haiku-5-5'])
+})
+
+test('/router-effort shows the policy and sets the session mode', { options: { mode: 'route' } }, async ($, on) => {
+  world(on)
+  await start($)
+
+  const shown = await command($, 'router-effort')
+  expect(shown.text).toContain('effort — auto')
+  expect(shown.text).toContain('never sends Max or Ultracode')
+
+  const set = await command($, 'router-effort', 'task')
+  expect(set.text).toContain('effort mode task')
+  expect((await router($, '')).text).toContain('effort task')
+})
+
+test('command aliases reach the same handlers', { options: { mode: 'route' } }, async ($, on) => {
+  world(on)
+  await start($)
+  await submit($, 'Translate this error message into German please')
+  await step($)
+
+  expect((await command($, 'router-why')).text).toContain('translation')
+  expect((await command($, 'router-log')).text).toContain('"event":"route"')
+  expect((await command($, 'router-panel')).text).toContain('pane opened')
+
+  await command($, 'router-style', 'adhd')
+  expect((await command($, 'router-style')).text).toContain('style is adhd')
+
+  await command($, 'router-off')
+  expect((await command($, 'router-on')).text).toContain('routing on')
+})
+
+test('/router-ultracode shows and sets the mode', { options: { mode: 'route' } }, async ($, on) => {
+  world(on)
+  await start($)
+
+  const shown = await command($, 'router-ultracode')
+  expect(shown.text).toContain('suggest')
+
+  const set = await command($, 'router-ultracode', 'auto')
+  expect(set.text).toContain('ultracode auto')
+
+  const entered = await submit($, HARD)
+  expect((entered as { text?: string }).text).toContain('ultracode')
+  expect((await router($, '')).text).toContain('ultracode auto')
 })

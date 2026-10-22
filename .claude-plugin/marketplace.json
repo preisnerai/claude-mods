@@ -6,7 +6,7 @@
     {
       "name": "model-router",
       "source": "./model-router",
-      "description": "Cache-aware model routing, rtk-style output compression and terse answers. Shows the dollars saved."
+      "description": "Cache-aware model and effort routing for Claude Code Desktop: non-code rules, research at Sonnet, Ultracode for the hardest tasks, /router-help and /router why, rtk-style output compression and terse answers."
     },
     {
       "name": "find-mod",

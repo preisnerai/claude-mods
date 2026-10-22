@@ -2,15 +2,29 @@ import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentStatus, EngineInterface, Register } from 'claude-code'
 
 import type { Effort, Ledger, Route, Sent, Style, Tier } from '../types'
-import { EFFORTS, ULTRACODE, categoryOf, clampEffort, effortFor, isHardest, learnedLine, nudge, shiftOf, shiftTier } from './adapt'
+import { EFFORTS, ULTRACODE, categoryOf, clampEffort, effortFor, effortLabel, isHardest, learnedLine, nudge, shiftOf, shiftTier } from './adapt'
 import type { Bias } from './adapt'
-import { ORDER, heuristic, isFollowUp, layaQuestion, parseJudge, parseLaya, rank, rubric, words } from './classify'
+import {
+  ORDER,
+  heuristic,
+  isDissatisfied,
+  isFollowUp,
+  layaQuestion,
+  nextTier,
+  parseJudgeVerdict,
+  parseLaya,
+  prevTier,
+  rank,
+  rubric,
+  words,
+} from './classify'
 import type { Verdict } from './classify'
 import { MIN_CHARS, compress, familyOf, keepsSignal, rtkFilter } from './compress'
 import { CACHE, PROFILE, addLedger, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, promptOf, requestCost, saved, size, switchDelta, turnCost, usd } from './cost'
 import type { Cache, LedgerDelta, Profile, Target } from './cost'
 import { WORKERS, crewSection, delegationHint, tierOfWorker, workerName, workerSpec, workerType } from './crew'
 import { STYLE, isStyle } from './style'
+import { explainDecision, lastDecision, lastUltracodeAfter } from './why'
 
 // Model per tier. Change the ids here to re-route.
 const MODEL: Record<Tier, string> = {
@@ -21,15 +35,61 @@ const MODEL: Record<Tier, string> = {
 }
 const PANE = 'model-router'
 const NAME: Record<Tier, string> = { haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus', fable: 'Fable' }
+
+// Every command the mod registers. `/router-help` is the directory; the rest are short aliases.
+const COMMANDS = [
+  { name: 'router', description: 'model-router: stats, route, savings; `/router help` lists every command' },
+  { name: 'router-help', description: 'model-router: list every command and explain what it is for' },
+  { name: 'router-start', description: 'model-router: check the install and turn routing on' },
+  { name: 'router-why', description: 'model-router: explain the last model/effort decision' },
+  { name: 'router-effort', description: 'model-router: show or set effort mode (auto|task|fixed)' },
+  { name: 'router-ultracode', description: 'model-router: Ultracode mode (suggest|auto|off)' },
+  { name: 'router-log', description: 'model-router: last 50 raw decisions as JSON' },
+  { name: 'router-panel', description: 'model-router: open the live pane' },
+  { name: 'router-style', description: 'model-router: answer style (terse|adhd|off)' },
+  { name: 'router-off', description: 'model-router: stop routing for this session' },
+  { name: 'router-on', description: 'model-router: resume routing for this session' },
+  { name: 'router-reset', description: 'model-router: clear totals, learned profiles, corrections and log' },
+]
+
+const HELP = [
+  'model-router — commands',
+  '',
+  'Stats and setup',
+  '  /router              route in force, savings, switches/holds, compression totals',
+  '  /router-help         this list, with what each command is for',
+  '  /router-start        check the install and turn routing on with sane defaults',
+  '  /router-panel        open the live pane (Desktop shows it beside the chat)',
+  '',
+  'Why and tuning',
+  '  /router-why          explain the last decision: rule or judge, tier/effort, cache, Ultracode',
+  '  /router-effort       show the effort policy; set auto|task|fixed for this session',
+  '  /router-ultracode X  Ultracode: suggest (hint), auto (add the keyword), off',
+  '  /router-log          the last 50 raw decisions as JSON, for calibration',
+  '',
+  'Session control',
+  '  /router-style X      answer style: terse, adhd or off',
+  '  /router-off          stop routing for this session',
+  '  /router-on           resume routing for this session',
+  '  /router-reset        clear totals, learned profiles, corrections and the decision log',
+  '',
+  'Shorthands: /router help · /router why · /router log · /router off · /router on · /router style …',
+  'Prefixes: !haiku !sonnet !opus !fable force a tier; !+ and !- nudge one tier from the current route.',
+  'Effort: Desktop calls xhigh Extra; the router never sends Max or Ultracode as an effort, and uses the Ultracode keyword for the hardest tasks.',
+].join('\n')
 const EFFORT: Record<Tier, Effort> = { haiku: 'low', sonnet: 'medium', opus: 'high', fable: 'xhigh' }
-// Every effort, `max` included, to read which way a person's /effort moved.
-const ALL_EFFORTS = [...EFFORTS, 'max']
+// Every Desktop effort, `max` and `ultracode` included, to read which way a person's /effort moved.
+const ALL_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
 
 // Hand override for one prompt: "!opus przeprojektuj ten moduł".
 const FORCE = /^!(haiku|sonnet|opus|fable)\s+/i
+// One-character correction: "!+" one tier harder, "!-" one tier cheaper, relative to the current route.
+const NUDGE = /^!([+-])\s*/i
 
 // Failed or repeated tool calls in a row before the router escalates (or suggests it).
 const STRIKES = 3
+// A judge answer below this confidence is not a decision: the current model stays.
+const JUDGE_FLOOR = 0.55
 const LAYA_TIMEOUT_MS = 4_000
 const LOG_CAP = 500
 const TEE_SLOTS = 200
@@ -62,6 +122,21 @@ const category = atom({ plugin: 'model-router', key: 'category' } as const, null
 
 type $ = EngineInterface
 
+type Prefix = { text: string; forced: Tier | null; nudge: -1 | 0 | 1; raw: string }
+
+/** Reads "!opus …", "!+ …" and "!- …"; the text without its prefix goes to the model. */
+function parsePrefix(text: string): Prefix {
+  const force = FORCE.exec(text)
+  if (force !== null) {
+    return { text: text.slice(force[0].length), forced: force[1]!.toLowerCase() as Tier, nudge: 0, raw: force[0] }
+  }
+  const nudge = NUDGE.exec(text)
+  if (nudge !== null) {
+    return { text: text.slice(nudge[0].length), forced: null, nudge: nudge[1] === '+' ? 1 : -1, raw: nudge[0] }
+  }
+  return { text, forced: null, nudge: 0, raw: '' }
+}
+
 // What an agent of the crew may be doing and still take a message: a finished one resumes with its context.
 const LIVE = new Set<AgentStatus>(['pending', 'running', 'waiting', 'idle', 'completed'])
 
@@ -70,7 +145,7 @@ type Config = {
   orchestrator: Tier
   cache: Cache
   effort: Record<Tier, Effort>
-  effortMode: 'auto' | 'fixed'
+  effortMode: 'auto' | 'fixed' | 'task'
   ultracode: 'suggest' | 'auto' | 'off'
   adapt: boolean
   enableFable: boolean
@@ -100,7 +175,7 @@ function tierOf(model: string): Tier | undefined {
 
 function describe(r: Route): string {
   const how = r.source === 'rule' || r.source === 'judge' || r.source === 'laya' ? `${r.source} ${r.confidence.toFixed(2).replace(/^0/, '')}` : r.source
-  return `${NAME[r.tier]}·${r.effort} (${how})`
+  return `${NAME[r.tier]}·${effortLabel(r.effort)} (${how})`
 }
 
 // Every read-modify-write of the store, one after another: two hooks running at once (the main loop and a
@@ -115,11 +190,36 @@ function storeUpdate<T>($: $, key: string, fn: (value: T | undefined) => T): Pro
   return run
 }
 
-// Calibration data: what was routed and why, read back with /router log.
+// Calibration data: what was routed and why, read back with /router log and /router why.
 async function log($: $, event: string, data: Record<string, unknown>) {
   try {
     const entry = { at: new Date(await $.clock.now()).toISOString(), event, ...data }
-    await storeUpdate<unknown[]>($, 'log', entries => [...(entries ?? []), entry].slice(-LOG_CAP))
+    let entries: unknown[] = []
+    await storeUpdate<unknown[]>($, 'log', old => {
+      entries = [...(old ?? []), entry].slice(-LOG_CAP)
+      return entries
+    })
+    await writeLog($, entries)
+  } catch {}
+}
+
+let basePromise: Promise<string> | undefined
+
+/** The Claude config folder: where tee and the decision log live. */
+function configBase($: $): Promise<string> {
+  basePromise ??= (async () => {
+    const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
+    const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? (home === undefined ? undefined : `${home}/.claude`)
+    return (config ?? (await $.env.get('TMPDIR')) ?? (await $.env.get('TEMP')) ?? '/tmp').replace(/\\/g, '/').replace(/\/+$/, '')
+  })()
+  return basePromise
+}
+
+/** A mirror of the in-memory log, so decisions can be inspected and used as calibration data. */
+async function writeLog($: $, entries: unknown[]) {
+  try {
+    const base = await configBase($)
+    await $.fs.write(`${base}/model-router/decisions.json`, JSON.stringify(entries, null, 2))
   } catch {}
 }
 
@@ -198,16 +298,23 @@ async function askJudge($: $, text: string, cfg: Config): Promise<Verdict | unde
     timeoutMs: 8_000,
   })
   await bill($, { judgeCalls: 1, judgeUsd: usd(MODEL.haiku, reply.usage) ?? 0 })
+  const parsed = reply.isAnswered ? parseJudgeVerdict(reply.text, cfg.enableFable) : undefined
+  const prompt = text.slice(0, 280)
   if (!reply.isAnswered) {
-    await log($, 'judge', { reason: reply.reason })
+    await log($, 'judge', { reason: reply.reason, prompt })
+  } else if (parsed === undefined) {
+    await log($, 'judge', { reason: 'unparsed', prompt })
+  } else if (parsed.confidence < JUDGE_FLOOR) {
+    await log($, 'judge', { reason: 'low-confidence', tier: parsed.tier, confidence: Number(parsed.confidence.toFixed(2)), prompt })
   }
-  const tier = reply.isAnswered ? parseJudge(reply.text, cfg.enableFable) : undefined
-  return tier === undefined ? undefined : { tier, confidence: 0.7, source: 'judge', why: 'judge' }
+  return parsed === undefined || parsed.confidence < JUDGE_FLOOR
+    ? undefined
+    : { tier: parsed.tier, confidence: parsed.confidence, source: 'judge', why: 'judge' }
 }
 
 /** Local rules first (no tokens, no wait); laya-serve or the Haiku judge only for what they cannot call. */
 async function classify($: $, text: string, cfg: Config): Promise<Verdict | undefined> {
-  const local = heuristic(text, cfg.enableFable)
+  const local = heuristic(text, cfg.enableFable, { failedTools: await read($, strikes) })
   if (local !== undefined) {
     return local
   }
@@ -236,7 +343,7 @@ async function recordSessionModel($: $) {
  * when the turn it saves on outweighs that write. A harder tier is about quality, not money: `escalate: auto`
  * takes it, `suggest` names it in the status line and leaves the switch to the person.
  */
-async function apply($: $, given: Verdict, cfg: Config): Promise<Verdict> {
+async function apply($: $, given: Verdict, cfg: Config, prompt?: string): Promise<Verdict> {
   await recordSessionModel($)
   const now = await $.clock.now()
   const isForced = given.source === 'forced'
@@ -257,7 +364,11 @@ async function apply($: $, given: Verdict, cfg: Config): Promise<Verdict> {
   // The effort this task needs. The cache belongs to model and effort, so a new effort on the same model throws
   // it away like a switch does: it is taken only when the same math says it costs nothing more.
   const kept = await targetFor($, verdict.tier, cfg)
-  const wanted = cfg.effortMode === 'auto' && !isForced ? effortFor(verdict, cfg.effort[verdict.tier], learned.effort) : kept.effort
+  // A manually chosen Ultracode is the person's own call: the router keeps it and only routes the model.
+  const manualUltracode = String(from.effort ?? '').toLowerCase() === 'ultracode'
+  const wanted = cfg.effortMode !== 'fixed' && !isForced && !manualUltracode
+    ? effortFor(verdict, cfg.effort[verdict.tier], learned.effort)
+    : kept.effort
   // Priced against what the cache holds now: when the last request went out at another effort on this same
   // model (an earlier task's own effort), staying there is an option too, so dropping back is never free by default.
   const stay = canonical(from.model) === canonical(kept.model) && from.effort !== kept.effort ? { model: kept.model, effort: from.effort } : undefined
@@ -272,7 +383,7 @@ async function apply($: $, given: Verdict, cfg: Config): Promise<Verdict> {
   }
   if (wanted !== to.effort) {
     const candidate = { model: kept.model, effort: wanted }
-    const extra = tokens > 0 ? switchDelta(to, candidate, tokens, warmNow, now, profile, cfg.cache) : 0
+    const extra = cfg.effortMode === 'task' ? 0 : tokens > 0 ? switchDelta(to, candidate, tokens, warmNow, now, profile, cfg.cache) : 0
     if (extra !== undefined && extra <= 0) {
       to = candidate
     }
@@ -294,17 +405,41 @@ async function apply($: $, given: Verdict, cfg: Config): Promise<Verdict> {
     const delta = tokens > 0 ? switchDelta(from, to, tokens, warmNow, now, profile, cfg.cache) : undefined
     if (isHarder) {
       take = cfg.escalate === 'auto'
-      const cost = delta === undefined ? '' : ` (+${dollars(delta)} with the cache re-write)`
+      const cost = delta === undefined ? '' : ` (+${dollars(delta)} with the cache re-write of ${size(tokens)} tokens)`
       why = take ? `${verdict.why}${cost}` : `consider !${verdict.tier}${cost}`
     } else if (delta !== undefined) {
       take = delta < 0
-      why = take ? `saves ≈${dollars(-delta)}` : `switching costs ${dollars(delta)} more (cache)`
+      why = take
+        ? `saves ≈${dollars(-delta)}`
+        : `switching costs ${dollars(delta)} more (cache re-write of ${size(tokens)} tokens)`
     }
     if (tokens > 0) {
       await bill($, take ? { switches: 1 } : { holds: 1 })
     }
   }
-  await log($, 'route', { tier: verdict.tier, effort: to.effort ?? null, source: verdict.source, confidence: Number(verdict.confidence.toFixed(2)), why: verdict.why, taken: take, from: fromTier ?? null, context: tokens })
+  const effortNote = cfg.effortMode !== 'fixed' && !isForced && take && wanted !== kept.effort
+    ? to.effort === wanted
+      ? `effort ${effortLabel(wanted)} for this task`
+      : `task wanted ${effortLabel(wanted)}, kept ${effortLabel(to.effort)} (cache)`
+    : ''
+  if (effortNote !== '') {
+    why = `${why} · ${effortNote}`
+  }
+  await log($, 'route', {
+    tier: verdict.tier,
+    effort: to.effort ?? null,
+    effortWanted: wanted,
+    effortNote,
+    source: verdict.source,
+    confidence: Number(verdict.confidence.toFixed(2)),
+    why: verdict.why,
+    decision: why,
+    taken: take,
+    from: fromTier ?? null,
+    fromEffort: from.effort ?? null,
+    context: tokens,
+    prompt: prompt?.slice(0, 280),
+  })
 
   if (take) {
     await update($, route, () => target)
@@ -328,37 +463,102 @@ async function pinOrchestrator($: $, cfg: Config) {
   }
 }
 
+async function baseTier($: $, cfg: Config): Promise<Tier> {
+  const current = await read($, route)
+  if (current !== null) {
+    return current.tier
+  }
+  return cfg.mode === 'crew' ? cfg.orchestrator : tierOf(await $.session.model()) ?? cfg.orchestrator
+}
+
 async function routePrompt($: $, text: string, cfg: Config): Promise<Verdict | undefined> {
   const current = await read($, route)
+  if (isDissatisfied(text)) {
+    const base = await baseTier($, cfg)
+    const up = nextTier(base, cfg.enableFable)
+    const tokens = await read($, context)
+    const effort = current?.effort ?? ((await read($, baseEffort)) as Effort | null) ?? null
+    if (up === undefined) {
+      const message = `already at ${NAME[base]}, the strongest tier`
+      await update($, note, () => `model-router: ${message} · dissatisfaction`)
+      await status($, `${message} · dissatisfaction`)
+      await log($, 'route', {
+        tier: base,
+        effort,
+        source: 'escalated',
+        confidence: 1,
+        why: 'dissatisfied',
+        decision: message,
+        taken: false,
+        from: base,
+        context: tokens,
+        prompt: text.slice(0, 280),
+      })
+      return undefined
+    }
+    return apply($, { tier: up, confidence: 1, source: 'escalated', why: 'dissatisfied' }, cfg, text)
+  }
   if (current !== null && isFollowUp(text, cfg.enableFable)) {
+    await log($, 'route', {
+      tier: current.tier,
+      effort: current.effort,
+      source: 'follow-up',
+      confidence: 1,
+      why: 'follow-up',
+      decision: 'keeps the current model',
+      taken: true,
+      from: current.tier,
+      context: await read($, context),
+      prompt: text.slice(0, 280),
+    })
     await update($, note, () => `model-router: ${NAME[current.tier]} · follow-up`)
     await status($, `${describe({ ...current, source: 'follow-up' })}`)
     return undefined
   }
   // "hi" says too little to route: the session's /model answers it, and the next prompt routes.
   if (current === null && words(text) < 3) {
+    await log($, 'unsure', {
+      tier: tierOf(await $.session.model()) ?? null,
+      effort: (await read($, baseEffort)) ?? null,
+      why: 'too short to route',
+      decision: 'the session model answers',
+      taken: false,
+      context: await read($, context),
+      prompt: text.slice(0, 280),
+    })
     return undefined
   }
   const verdict = await classify($, text, cfg)
   if (verdict === undefined) {
+    await log($, 'unsure', {
+      tier: current?.tier ?? tierOf(await $.session.model()) ?? null,
+      effort: current?.effort ?? ((await read($, baseEffort)) as Effort | null) ?? null,
+      why: 'no confident rule or judge',
+      decision: 'kept the current model',
+      taken: false,
+      context: await read($, context),
+      prompt: text.slice(0, 280),
+    })
     await status($, current === null ? 'unsure, using /model' : `${describe(current)} · unsure, kept`)
     return undefined
   }
-  return apply($, verdict, cfg)
+  return apply($, verdict, cfg, text)
 }
 
 /** Routes one prompt as it enters: a forced tier, or the classifier's. Returns the text without its prefix. */
-async function enter($: $, text: string, forcedTier: Tier | null, cfg: Config): Promise<Verdict | undefined> {
+async function enter($: $, text: string, forcedTier: Tier | null, cfg: Config, forcedWhy = 'forced', nudge = 0): Promise<Verdict | undefined> {
   await update($, note, () => null)
   if (forcedTier === null) {
     return routePrompt($, text, cfg)
   }
-  // A !tier over what the rules would pick is a correction, learned for that kind of task.
-  const ruled = heuristic(text, cfg.enableFable)
-  if (ruled !== undefined && ruled.tier !== forcedTier) {
+  // A !tier or !+/!- over what the rules would pick is a correction, learned for that kind of task.
+  const ruled = heuristic(text, cfg.enableFable, { failedTools: await read($, strikes) })
+  if (nudge !== 0) {
+    await correct($, cfg, await read($, category), 'tier', nudge)
+  } else if (ruled !== undefined && ruled.tier !== forcedTier) {
     await correct($, cfg, categoryOf(ruled), 'tier', rank(forcedTier) - rank(ruled.tier))
   }
-  await apply($, { tier: forcedTier, confidence: 1, source: 'forced', why: 'forced' }, cfg)
+  await apply($, { tier: forcedTier, confidence: 1, source: 'forced', why: forcedWhy }, cfg, text)
   return undefined
 }
 
@@ -370,7 +570,8 @@ async function ultracode($: $, text: string, verdict: Verdict | undefined, cfg: 
   if (cfg.ultracode === 'off' || verdict === undefined || !isHardest(verdict) || ULTRACODE.test(text)) {
     return text
   }
-  await log($, 'ultracode', { mode: cfg.ultracode, why: verdict.why })
+  const chosen = await read($, route)
+  await log($, 'ultracode', { mode: cfg.ultracode, tier: verdict.tier, effort: chosen?.effort ?? null, why: verdict.why })
   if (cfg.ultracode === 'auto') {
     await update($, note, n => `${n ?? 'model-router:'} · ran as ultracode`)
     return `${text.trimEnd()}\n\nultracode`
@@ -419,10 +620,22 @@ async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Conf
   await pinOrchestrator($, cfg)
   const orchestrates = `crew · ${NAME[cfg.orchestrator]} orchestrates`
   // There is no Fable worker: a forced !fable goes to the strongest worker there is, and says so.
-  const asked = forcedTier ?? heuristic(text, false)?.tier
+  const asked = forcedTier ?? heuristic(text, false, { failedTools: await read($, strikes) })?.tier
   const tier = asked === 'fable' ? 'opus' : asked
   const wanted = tier !== undefined && tier !== cfg.orchestrator && (forcedTier !== null || rank(tier) > rank(cfg.orchestrator))
   if (tier === undefined || !wanted) {
+    await log($, 'route', {
+      tier: cfg.orchestrator,
+      effort: cfg.effort[cfg.orchestrator],
+      source: 'crew',
+      confidence: 1,
+      why: tier === undefined ? 'no clear tier' : `${tier} task, orchestrator handles it`,
+      decision: 'stays with the orchestrator',
+      taken: true,
+      from: cfg.orchestrator,
+      context: await read($, context),
+      prompt: text.slice(0, 280),
+    })
     await status($, orchestrates)
     return undefined
   }
@@ -430,7 +643,7 @@ async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Conf
   const swap = asked === 'fable' ? ' (no Fable worker: the strongest one takes it)' : ''
   await update($, note, () => `model-router: crew · ${workerName(tier)}${swap}`)
   await status($, `${orchestrates} · ${tier} task → ${workerName(tier)}${swap}`)
-  await log($, 'delegate', { tier, forced: forcedTier !== null })
+  await log($, 'delegate', { tier, forced: forcedTier !== null, worker: workerName(tier), prompt: text.slice(0, 280) })
   return delegationHint(tier, forcedTier !== null, live === undefined ? undefined : addressOf(live))
 }
 
@@ -522,10 +735,7 @@ async function tee($: $, id: string, command: string, raw: string): Promise<stri
     const taken = teeTaken++
     const slot = ((await teeStart) + taken) % TEE_SLOTS
     await storeUpdate<number>($, 'teeSlot', () => slot + 1)
-    const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
-    const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? (home === undefined ? undefined : `${home}/.claude`)
-    // Forward slashes everywhere: Windows takes them, and Git Bash would eat a backslash.
-    const base = (config ?? (await $.env.get('TMPDIR')) ?? (await $.env.get('TEMP')) ?? '/tmp').replace(/\\/g, '/').replace(/\/+$/, '')
+    const base = await configBase($)
     const path = `${base}/model-router/tee/${slot}.txt`
     await $.fs.write(path, `# model-router: full output of ${id}: ${command.slice(0, 200)}\n${raw}`)
     return path
@@ -590,77 +800,51 @@ async function report($: $, cfg: Config): Promise<string> {
     '',
     `learned: ${cfg.adapt ? (learned ?? 'nothing yet') : 'off'} · effort ${cfg.effortMode} · ultracode ${cfg.ultracode}`,
     '',
-    '`/router off|on` · `/router style terse|adhd|off` · `/router log` · `/router reset` · prefix a prompt with `!haiku` `!sonnet` `!opus` to force it',
+    '`/router why` · `/router off|on` · `/router style terse|adhd|off` · `/router log` · `/router reset` · prefix a prompt with `!haiku` `!sonnet` `!opus`, or nudge with `!+` `!-`',
   ].join('\n')
 }
 
-export const register: Register = (on, options) => {
-  const laya = String(options.layaUrl ?? '').trim().replace(/\/+$/, '')
-  const key = String(options.layaApiKey ?? '')
-  const cfg: Config = {
-    mode: pick(options.mode, ['route', 'crew'] as const, 'crew'),
-    orchestrator: pick(options.orchestrator, ['haiku', 'sonnet', 'opus'] as const, 'sonnet'),
-    cache: CACHE[pick(options.cacheTtl, ['1h', '5m'] as const, '1h')],
-    // Never `max`, even when a setting asks for it: it becomes xhigh.
-    effort: Object.fromEntries(ORDER.map(t => [t, clampEffort(options[`${t}Effort`], EFFORT[t])])) as Record<Tier, Effort>,
-    effortMode: pick(options.effortMode, ['auto', 'fixed'] as const, 'auto'),
-    ultracode: pick(options.ultracode, ['suggest', 'auto', 'off'] as const, 'suggest'),
-    adapt: pick(options.adapt, ['on', 'off'] as const, 'on') === 'on',
-    enableFable: flag(options.enableFable, false),
-    escalate: pick(options.escalate, ['auto', 'suggest'] as const, 'auto'),
-    judge: pick(options.judge, ['haiku', 'off'] as const, 'haiku'),
-    style: pick(options.style, ['terse', 'adhd', 'off'] as const, 'terse'),
-    compress: flag(options.compress, true),
-    useRtk: flag(options.useRtk, true),
-    showNote: flag(options.showNote, true),
-    layaUrl: laya,
-    layaHeaders: key === '' ? {} : { authorization: `Bearer ${key}` },
-  }
-  // Crew spawns in flight, by tier: two Agent calls in one response must not both pass the check.
-  const starting = new Set<Tier>()
-
-  on('session.start', async ($, e, next) => {
-    // Not awaited: startup never waits on a process.
-    rtk = cfg.compress && cfg.useRtk
-      ? $.process.run(['rtk', '--version'], { timeoutMs: 3_000 }).then(r => r.exitCode === 0 && /^rtk\s/.test(r.stdout)).catch(() => false)
-      : Promise.resolve(false)
-    await $.command.register({ name: 'router', description: 'model-router: savings, route, style (/router panel|off|on|style|log|reset)' })
-    $.ui.open({ id: PANE, title: 'Model router' }).catch(() => {})
-    if (cfg.mode === 'crew') {
-      for (const t of WORKERS) {
-        try {
-          await $.agent.register(workerSpec(t, MODEL[t], cfg.effort[t]))
-        } catch {}
+async function runRouter($: $, args: string, cfg: Config): Promise<{ text: string }> {
+    const [sub = '', arg = ''] = args.trim().toLowerCase().split(/\s+/)
+    if (sub === 'help' || sub === 'commands') {
+      return { text: HELP }
+    }
+    if (sub === 'start') {
+      const model = await $.session.model()
+      await update($, isManual, () => false)
+      await update($, sessionModel, () => model)
+      const current = (await read($, style)) ?? cfg.style
+      const r = await read($, route)
+      return {
+        text: [
+          `model-router: ready — ${cfg.mode === 'crew' ? `crew, ${NAME[cfg.orchestrator]} orchestrates` : `route mode, from ${model}`}`,
+          `style ${current} · compression ${cfg.compress ? 'on' : 'off'}${cfg.useRtk && (await rtk) ? ' (rtk)' : ''} · effort ${cfg.effortMode} · ultracode ${cfg.ultracode} · learning ${cfg.adapt ? 'on' : 'off'}`,
+          r === null ? 'not routed yet — the next prompt is routed.' : `current route: ${describe(r)}.`,
+          'Type `/router-help` for every command and what it is for.',
+        ].join('\n'),
       }
     }
-    return next(e)
-  })
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
-    const l = await read($, ledger)
-    const r = await read($, route)
-    const manual = await read($, isManual)
-    const s = (await read($, style)) ?? cfg.style
-    const total = ORDER.reduce((n, t) => n + l.turns[t], 0)
-    return (
-      <Box flexDirection="column">
-        <Text bold>{manual ? 'off · /router on' : r === null ? 'not routed yet' : describe(r)}</Text>
-        <Text color="green">saved {l.baselineUsd === 0 ? '—' : `≈${dollars(saved(l))}`}</Text>
-        {ORDER.filter(t => l.turns[t] > 0).map(t => (
-          <Text>
-            {`${NAME[t].padEnd(7)}${'█'.repeat(Math.max(1, Math.round((l.turns[t] / total) * 12)))} ${l.turns[t]}`}
-          </Text>
-        ))}
-        <Text dimColor>
-          {l.compressions === 0 ? 'no compression yet' : `≈${size((l.rawChars - l.keptChars) / 4)} tokens kept out`} · {cfg.mode} · {s}
-        </Text>
-      </Box>
-    )
-  })
-
-  on('command.run', { command: 'router' }, async ($, e) => {
-    const [sub = '', arg = ''] = e.args.trim().toLowerCase().split(/\s+/)
+    if (sub === 'effort') {
+      const learned = cfg.adapt ? learnedLine(await biasOf($), await $.clock.now()) : undefined
+      if (arg === 'auto' || arg === 'task' || arg === 'fixed') {
+        cfg.effortMode = arg
+        return { text: `model-router: effort mode ${arg} for this session. Set the default in /config; \`/router-effort\` shows the policy.` }
+      }
+      const r = await read($, route)
+      const policy = cfg.effortMode === 'auto'
+        ? 'auto: a task moves one step from the tier base, taken only when the cache math says it pays'
+        : cfg.effortMode === 'task'
+          ? 'task: always take the task effort, even when the cache rewrite costs more'
+          : 'fixed: the tier base effort only'
+      return {
+        text: [
+          `model-router effort — ${cfg.effortMode} · ultracode ${cfg.ultracode} · learning ${cfg.adapt ? (learned ?? 'nothing yet') : 'off'}`,
+          policy,
+          `route: ${r === null ? 'not routed yet' : describe(r)} · bases: Haiku low, Sonnet medium, Opus high, Fable xhigh (Extra in Desktop)`,
+          'The router never sends Max or Ultracode as an effort. Ultracode is a multi-agent switch for the hardest tasks; set it in /config. Change the session mode with `/router-effort auto|task|fixed`.',
+        ].join('\n'),
+      }
+    }
     if (sub === 'panel') {
       const opened = await $.ui.open({ id: PANE, title: 'Model router' })
       return { text: opened.isPlaced ? 'Model router pane opened.' : `The pane could not open here: ${opened.reason}` }
@@ -695,6 +879,27 @@ export const register: Register = (on, options) => {
       }
       return { text: `model-router: style ${arg}. The system prompt changes once, so the next request re-reads the conversation uncached.` }
     }
+    if (sub === 'why') {
+      const entries = ((await $.store.get('log')) as unknown[] | undefined) ?? []
+      const text = explainDecision(lastDecision(entries))
+      const ultra = lastUltracodeAfter(entries)
+      return { text: ultra === undefined ? text : `${text}\n${explainDecision(ultra)}` }
+    }
+    if (sub === 'ultracode') {
+      if (arg === 'suggest' || arg === 'auto' || arg === 'off') {
+        cfg.ultracode = arg
+        return { text: `model-router: ultracode ${arg} for this session. Set the default in /config; \`/router-ultracode\` shows the current mode.` }
+      }
+      return {
+        text: [
+          `model-router ultracode — ${cfg.ultracode}`,
+          'suggest: name the keyword in the status line for the hardest tasks',
+          'auto: add the keyword to the prompt (multi-agent workflow; dearer per turn, often done sooner and cheaper overall)',
+          'off: say nothing',
+          'Set it for this session with `/router-ultracode suggest|auto|off`; the default lives in /config.',
+        ].join('\n'),
+      }
+    }
     if (sub === 'log') {
       const entries = ((await $.store.get('log')) as unknown[] | undefined) ?? []
       return { text: entries.length ? entries.slice(-50).map(x => JSON.stringify(x)).join('\n') : 'model-router: nothing logged yet' }
@@ -704,10 +909,96 @@ export const register: Register = (on, options) => {
       await $.store.delete('profile')
       await $.store.delete('log')
       await $.store.delete('adapt')
-      return { text: 'model-router: all-time savings, learned turn profiles, what it learned from your corrections and the log are cleared.' }
+      try {
+        const base = await configBase($)
+        await $.fs.write(`${base}/model-router/decisions.json`, '[]')
+      } catch {}
+      return { text: 'model-router: all-time savings, learned turn profiles, what it learned from your corrections and the decision log are cleared.' }
     }
     return { text: await report($, cfg) }
+}
+
+export const register: Register = (on, options) => {
+  const laya = String(options.layaUrl ?? '').trim().replace(/\/+$/, '')
+  const key = String(options.layaApiKey ?? '')
+  const cfg: Config = {
+    mode: pick(options.mode, ['route', 'crew'] as const, 'crew'),
+    orchestrator: pick(options.orchestrator, ['haiku', 'sonnet', 'opus'] as const, 'sonnet'),
+    cache: CACHE[pick(options.cacheTtl, ['1h', '5m'] as const, '1h')],
+    // Never `max` or `ultracode` as a router-sent effort: they become xhigh (Extra); Ultracode is the keyword switch.
+    effort: Object.fromEntries(ORDER.map(t => [t, clampEffort(options[`${t}Effort`], EFFORT[t])])) as Record<Tier, Effort>,
+    effortMode: pick(options.effortMode, ['auto', 'fixed', 'task'] as const, 'auto'),
+    ultracode: pick(options.ultracode, ['suggest', 'auto', 'off'] as const, 'suggest'),
+    adapt: pick(options.adapt, ['on', 'off'] as const, 'on') === 'on',
+    enableFable: flag(options.enableFable, false),
+    escalate: pick(options.escalate, ['auto', 'suggest'] as const, 'auto'),
+    judge: pick(options.judge, ['haiku', 'off'] as const, 'haiku'),
+    style: pick(options.style, ['terse', 'adhd', 'off'] as const, 'terse'),
+    compress: flag(options.compress, true),
+    useRtk: flag(options.useRtk, true),
+    showNote: flag(options.showNote, true),
+    layaUrl: laya,
+    layaHeaders: key === '' ? {} : { authorization: `Bearer ${key}` },
+  }
+  // Crew spawns in flight, by tier: two Agent calls in one response must not both pass the check.
+  const starting = new Set<Tier>()
+
+  on('session.start', async ($, e, next) => {
+    // Not awaited: startup never waits on a process.
+    rtk = cfg.compress && cfg.useRtk
+      ? $.process.run(['rtk', '--version'], { timeoutMs: 3_000 }).then(r => r.exitCode === 0 && /^rtk\s/.test(r.stdout)).catch(() => false)
+      : Promise.resolve(false)
+    for (const command of COMMANDS) {
+      try {
+        await $.command.register(command)
+      } catch {}
+    }
+    $.ui.open({ id: PANE, title: 'Model router' }).catch(() => {})
+    if (cfg.mode === 'crew') {
+      for (const t of WORKERS) {
+        try {
+          await $.agent.register(workerSpec(t, MODEL[t], cfg.effort[t]))
+        } catch {}
+      }
+    }
+    return next(e)
   })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const l = await read($, ledger)
+    const r = await read($, route)
+    const manual = await read($, isManual)
+    const s = (await read($, style)) ?? cfg.style
+    const total = ORDER.reduce((n, t) => n + l.turns[t], 0)
+    return (
+      <Box flexDirection="column">
+        <Text bold>{manual ? 'off · /router on' : r === null ? 'not routed yet' : describe(r)}</Text>
+        <Text color="green">saved {l.baselineUsd === 0 ? '—' : `≈${dollars(saved(l))}`}</Text>
+        {ORDER.filter(t => l.turns[t] > 0).map(t => (
+          <Text>
+            {`${NAME[t].padEnd(7)}${'█'.repeat(Math.max(1, Math.round((l.turns[t] / total) * 12)))} ${l.turns[t]}`}
+          </Text>
+        ))}
+        <Text dimColor>
+          {l.compressions === 0 ? 'no compression yet' : `≈${size((l.rawChars - l.keptChars) / 4)} tokens kept out`} · {cfg.mode} · {s}
+        </Text>
+      </Box>
+    )
+  })
+
+  on('command.run', { command: 'router' }, async ($, e) => runRouter($, e.args, cfg))
+  on('command.run', { command: 'router-help' }, async ($) => runRouter($, 'help', cfg))
+  on('command.run', { command: 'router-start' }, async ($) => runRouter($, 'start', cfg))
+  on('command.run', { command: 'router-why' }, async ($) => runRouter($, 'why', cfg))
+  on('command.run', { command: 'router-effort' }, async ($, e) => runRouter($, e.args === '' ? 'effort' : `effort ${e.args}`, cfg))
+  on('command.run', { command: 'router-ultracode' }, async ($, e) => runRouter($, e.args === '' ? 'ultracode' : `ultracode ${e.args}`, cfg))
+  on('command.run', { command: 'router-log' }, async ($) => runRouter($, 'log', cfg))
+  on('command.run', { command: 'router-panel' }, async ($) => runRouter($, 'panel', cfg))
+  on('command.run', { command: 'router-style' }, async ($, e) => runRouter($, `style ${e.args}`, cfg))
+  on('command.run', { command: 'router-off' }, async ($) => runRouter($, 'off', cfg))
+  on('command.run', { command: 'router-on' }, async ($) => runRouter($, 'on', cfg))
+  on('command.run', { command: 'router-reset' }, async ($) => runRouter($, 'reset', cfg))
 
   on('prompt.submit', async ($, e, next) => {
     if (e.isMeta === true) {
@@ -718,30 +1009,56 @@ export const register: Register = (on, options) => {
       await update($, paneAsked, () => true)
       $.ui.open({ id: PANE, title: 'Model router' }).catch(() => {})
     }
+    const parsedPrefix = e.command === undefined ? parsePrefix(e.text) : { text: e.text, forced: null, nudge: 0 as const, raw: '' }
     if (await read($, isManual)) {
-      // Routing is off: a !tier prefix is still not meant for the model.
-      const prefix = e.command === undefined ? FORCE.exec(e.text) : null
-      if (prefix === null) {
+      // Routing is off: a !tier, !+ or !- prefix is still not meant for the model.
+      if (parsedPrefix.raw === '') {
         return next(e)
       }
-      $.ui.status(`router: off, so ${prefix[0].trim()} was ignored (/router on resumes)`)
-      return next({ ...e, text: e.text.slice(prefix[0].length) })
+      $.ui.status(`router: off, so ${parsedPrefix.raw.trim()} was ignored (/router on resumes)`)
+      return next({ ...e, text: parsedPrefix.text })
     }
-    const forced = e.command === undefined ? FORCE.exec(e.text) : null
-    const forcedTier = forced === null ? null : ((forced[1] ?? 'opus').toLowerCase() as Tier)
-    const text = forced === null ? e.text : e.text.slice(forced[0].length)
+    let forcedTier = parsedPrefix.forced
+    const forcedWhy = parsedPrefix.nudge === 0 ? 'forced' : parsedPrefix.nudge > 0 ? 'forced +1' : 'forced -1'
+    const text = parsedPrefix.text
+    if (parsedPrefix.nudge !== 0) {
+      const base = await baseTier($, cfg)
+      const nudged = parsedPrefix.nudge > 0 ? nextTier(base, cfg.enableFable) : prevTier(base)
+      if (nudged === undefined) {
+        const edge = parsedPrefix.nudge > 0 ? 'strongest' : 'cheapest'
+        const message = `already at the ${edge} tier (${NAME[base]})`
+        await update($, note, () => `model-router: ${message}`)
+        await status($, message)
+        await log($, 'route', {
+          tier: base,
+          effort: (await read($, baseEffort)) ?? null,
+          source: 'forced',
+          confidence: 1,
+          why: forcedWhy,
+          decision: message,
+          taken: false,
+          from: base,
+          context: await read($, context),
+          prompt: text.slice(0, 280),
+        })
+        return next({ ...e, text })
+      }
+      forcedTier = nudged
+    }
     if (cfg.mode === 'crew') {
       // Crew never switches models, so a prompt typed during a turn takes its hint now, like any other.
       const hint = e.command === undefined ? await delegation($, text, forcedTier, cfg) : undefined
-      const asked = e.command === undefined && e.turnId === undefined && forcedTier === null ? await ultracode($, text, heuristic(text, cfg.enableFable), cfg) : text
+      const asked = e.command === undefined && e.turnId === undefined && forcedTier === null
+        ? await ultracode($, text, heuristic(text, cfg.enableFable, { failedTools: await read($, strikes) }), cfg)
+        : text
       return next(hint === undefined ? { ...e, text: asked } : { ...e, text: asked, context: [...(e.context ?? []), hint] })
     }
     // Typed during a running turn: it runs on that turn's model, or waits for a turn of its own, routed then.
     if (e.turnId !== undefined) {
       if (e.command === undefined) {
-        await update($, queued, q => [...q, { text, tier: forcedTier }].slice(-QUEUE_CAP))
+        await update($, queued, q => [...q, { text, tier: forcedTier, why: forcedWhy, nudge: parsedPrefix.nudge }].slice(-QUEUE_CAP))
       }
-      return next(forced === null ? e : { ...e, text })
+      return next(parsedPrefix.raw === '' ? e : { ...e, text })
     }
     // A prompt that ran inside an earlier turn and is now typed again is a new prompt, routed here.
     if ((await read($, queued)).some(q => q.text === text)) {
@@ -763,9 +1080,9 @@ export const register: Register = (on, options) => {
       }
       return next(e)
     }
-    const verdict = await enter($, text, forcedTier, cfg)
+    const verdict = await enter($, text, forcedTier, cfg, forcedWhy, parsedPrefix.nudge)
     const asked = await ultracode($, text, verdict, cfg)
-    return next(forced === null && asked === text ? e : { ...e, text: asked })
+    return next(parsedPrefix.raw === '' && asked === text ? e : { ...e, text: asked })
   }).catch(($, e, next) => next(e)) // routing is best effort: never hold a prompt back
 
   on('turn.start', async ($, e, next) => {
@@ -780,7 +1097,7 @@ export const register: Register = (on, options) => {
       const waiting = (await read($, queued)).find(q => q.text === e.text)
       if (waiting !== undefined && !(await read($, isManual))) {
         await update($, queued, q => q.filter(x => x !== waiting))
-        await enter($, waiting.text, waiting.tier, cfg)
+        await enter($, waiting.text, waiting.tier, cfg, waiting.why, waiting.nudge)
       }
     }
     return next(e)
