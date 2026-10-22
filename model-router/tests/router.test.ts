@@ -960,15 +960,31 @@ test('effortMode task takes the task effort even when a warm cache would hold it
   expect(w.statuses.at(-1)).toContain('effort high for this task')
 })
 
-test('/router-help is the directory of every command', { options: { mode: 'route' } }, async ($, on) => {
+test('/router-help is the directory of every command and says what each is for', { options: { mode: 'route' } }, async ($, on) => {
   world(on)
   await start($)
 
   const help = await command($, 'router-help')
-  for (const name of ['/router', '/router-help', '/router-start', '/router-why', '/router-effort', '/router-ultracode', '/router-log', '/router-panel', '/router-style', '/router-off', '/router-on', '/router-reset']) {
-    expect(help.text).toContain(name)
+  const described: [string, string][] = [
+    ['/router', 'Show the current route'],
+    ['/router-help', 'Show this list'],
+    ['/router-start', 'turn routing on'],
+    ['/router-why', 'Explain the last model/effort decision'],
+    ['/router-effort', 'auto, task or fixed'],
+    ['/router-ultracode', 'suggest, auto or off'],
+    ['/router-log', 'JSON'],
+    ['/router-panel', 'Open the live pane'],
+    ['/router-style', 'terse, adhd or off'],
+    ['/router-off', 'Stop routing'],
+    ['/router-on', 'Resume routing'],
+    ['/router-reset', 'Clear totals'],
+  ]
+  for (const [name, description] of described) {
+    expect({ name, listed: help.text.includes(name), described: help.text.includes(description) }).toEqual({ name, listed: true, described: true })
   }
-  expect(help.text).toContain('what each command is for')
+  for (const sub of ['/router help', '/router start', '/router why', '/router effort', '/router ultracode', '/router log', '/router panel', '/router style', '/router off', '/router on', '/router reset']) {
+    expect(help.text).toContain(sub)
+  }
 })
 
 test('/router-start turns routing on and says what is active', { options: { mode: 'route' } }, async ($, on) => {
