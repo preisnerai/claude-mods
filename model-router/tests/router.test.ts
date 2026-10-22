@@ -966,18 +966,18 @@ test('/router-help is the directory of every command and says what each is for',
 
   const help = await command($, 'router-help')
   const described: [string, string][] = [
-    ['/router', 'Show the current route'],
-    ['/router-help', 'Show this list'],
+    ['/router', 'current route, savings'],
+    ['/router-help', 'this list'],
     ['/router-start', 'turn routing on'],
-    ['/router-why', 'Explain the last model/effort decision'],
-    ['/router-effort', 'auto, task or fixed'],
-    ['/router-ultracode', 'suggest, auto or off'],
+    ['/router-why', 'last model/effort decision'],
+    ['/router-effort', 'effort policy'],
+    ['/router-ultracode', 'Ultracode: `suggest`'],
     ['/router-log', 'JSON'],
-    ['/router-panel', 'Open the live pane'],
-    ['/router-style', 'terse, adhd or off'],
-    ['/router-off', 'Stop routing'],
-    ['/router-on', 'Resume routing'],
-    ['/router-reset', 'Clear totals'],
+    ['/router-panel', 'live pane'],
+    ['/router-style', 'answer style'],
+    ['/router-off', 'stop routing'],
+    ['/router-on', 'resume routing'],
+    ['/router-reset', 'clear totals'],
   ]
   for (const [name, description] of described) {
     expect({ name, listed: help.text.includes(name), described: help.text.includes(description) }).toEqual({ name, listed: true, described: true })

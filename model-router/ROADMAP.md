@@ -14,7 +14,7 @@
 ### Etap 0 — trafność wyboru modelu (najpierw, bo od tego zależy reszta)
 Diagnoza z `hooks/classify.ts`: reguły to pojedyncze słowa kluczowe nastawione na kod. Słowo „review", „debug" czy „fix" waży tyle samo bez względu na rozmiar zadania. Praca nie-kodowa (tłumaczenia w SPIM, Excel, Notion, Chrome, maile) prawie nie ma reguł, więc idzie do sądu Haiku albo zostaje na bieżącym modelu. Dochodzi cache math, który słusznie blokuje zejście z Opusa w środku sesji, ale z zewnątrz wygląda jak zły wybór.
 
-**Status w 1.6.1:** wdrożone i połączone z effort/ultracode z 1.5.0. Korpus z etykietami i próg ≥85% jest w `tests/classify.test.ts`; reguły nie-kodowe, negacje, sygnały rozmiaru i polityka research → Sonnet (nigdy Opus) w `hooks/classify.ts`; `!+`/`!-`, wykrywanie niezadowolenia, `decisions.json` i `/router why` w `hooks/register.tsx`; wyjaśnienia w `hooks/why.ts`; etykiety Desktop (Extra, Max, Ultracode) i uczenie z `!+`/`!-` w `hooks/adapt.ts`. Brakuje jeszcze 2–3 prawdziwych promptów, na których router się pomylił — do dopisania do korpusu.
+**Status w 1.6.2:** wdrożone i połączone z effort/ultracode z 1.5.0. Korpus z etykietami i próg ≥85% jest w `tests/classify.test.ts`; reguły nie-kodowe, negacje, sygnały rozmiaru i polityka research → Sonnet (nigdy Opus) w `hooks/classify.ts`; `!+`/`!-`, wykrywanie niezadowolenia, `decisions.json` i `/router why` w `hooks/register.tsx`; wyjaśnienia w `hooks/why.ts`; etykiety Desktop (Extra, Max, Ultracode) i uczenie z `!+`/`!-` w `hooks/adapt.ts`. Brakuje jeszcze 2–3 prawdziwych promptów, na których router się pomylił — do dopisania do korpusu.
 
 - **Zestaw testowy z prawdziwych promptów** (PL i EN, kod i nie-kod) z oczekiwanym tierem. Cel: zgodność ≥85% na zestawie, mierzona w `tests/classify.test.ts`.
 - **Reguły dla pracy nie-kodowej i agentowej**: tłumaczenie/edycja tekstów, arkusze, maile, operacje w przeglądarce i przez API.
@@ -25,7 +25,7 @@ Diagnoza z `hooks/classify.ts`: reguły to pojedyncze słowa kluczowe nastawione
 - **Wykrywanie niezadowolenia**: „znowu źle", „popraw to", „nie o to chodziło" w prompcie uruchamia eskalację o jeden tier.
 
 ### Etap 1 — start dla nowych osób
-**Status w 1.6.1:** `/router-start` i `/router-help` wdrożone; `/router-effort` i `/router-ultracode` dają szybką kontrolę. Profil i komunikaty w języku użytkownika nadal do zrobienia.
+**Status w 1.6.2:** `/router-start` i `/router-help` wdrożone; `/router-effort` i `/router-ultracode` dają szybką kontrolę. Profil i komunikaty w języku użytkownika nadal do zrobienia.
 - **`/router start`**: sprawdza instalację, pokazuje w 3 liniach, co mod robi, włącza wszystko poprawnie.
 - **Profil zamiast 15 ustawień**: `oszczędny | zrównoważony | jakość`. Reszta ustawień jako „zaawansowane".
 - **Komunikaty po ludzku i w języku użytkownika** (`lang` wykrywany z promptów), np. „Przełączono na Sonnet, oszczędzasz ok. 0,40 $".
