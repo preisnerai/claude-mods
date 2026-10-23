@@ -1,6 +1,6 @@
 {
   "name": "model-router",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "description": "Cache-aware model and effort routing for Claude Code Desktop: each prompt goes to Haiku, Sonnet or Opus by what it needs, and a cheaper model or effort only when that pays after the prompt-cache re-write. Rules read non-code work too, research is Sonnet at most, !+ and !- nudge the tier, /router-help lists every command, /router why explains the decision, /router-cache shows the cache hit rate and /router-budget caps the spend. Long sessions auto-compact with Haiku at tier thresholds, every prompt you send carries a small model·effort tag, and savings show in dollars and tokens. The hardest tasks can run as Ultracode. Crew mode adds warm per-model workers. Bash output is compressed rtk-style and answers drop the filler.",
   "author": {
     "name": "preisnerai"

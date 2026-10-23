@@ -515,12 +515,12 @@ async function apply($: $, given: Verdict, cfg: Config, prompt?: string): Promis
 
   if (take) {
     await update($, route, () => target)
-    await update($, note, () => `model-router: ${NAME[target.tier]} · ${why}`)
+    await update($, note, () => `model-router: ${NAME[target.tier]} · ${effortLabel(target.effort)} · ${why}`)
     await status($, `${describe({ ...target, effort: (to.effort as Effort | undefined) ?? target.effort })}${why === verdict.why ? '' : ' · ' + why}`)
   } else {
     const current = await read($, route)
     const name = fromTier === undefined ? from.model : NAME[fromTier]
-    await update($, note, () => `model-router: stayed on ${name} · ${verdict.tier} task, ${why}`)
+    await update($, note, () => `model-router: stayed on ${name} · ${effortLabel(current?.effort ?? target.effort)} · ${verdict.tier} task, ${why}`)
     await status($, `${current === null ? name : describe(current)} · ${verdict.tier} task, ${why}`)
   }
   return verdict
