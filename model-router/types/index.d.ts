@@ -95,6 +95,12 @@ declare module 'claude-code' {
       ledger: Ledger
       /** A session budget in USD; null follows the `budgetUsd` option, 0 is off. */
       budget: number | null
+      /** Auto-compact session switch; the default is the `compactAuto` option. */
+      compactOff: boolean
+      /** Set while an auto-compaction runs, so a turn ending inside it does not re-trigger. */
+      compactPending: boolean
+      /** When the last auto-compaction was attempted; a five-minute cooldown between tries. */
+      compactStamp: number | null
       /** Crew workers by agent id, and the prompt size of each one's last and first request. */
       workers: string[]
       workerWarm: Record<string, { tokens: number; at: number; first: number }>

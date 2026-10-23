@@ -32,7 +32,7 @@ Diagnoza z `hooks/classify.ts`: reguły to pojedyncze słowa kluczowe nastawione
 - **Podsumowanie na koniec sesji** w jednej linii: ile tokenów i dolarów zaoszczędzono.
 
 ### Etap 2 — oszczędności automatyczne
-**Status w 1.7.0:** budżet sesji (`/router-budget`, `budgetUsd`, `budgetAction`) i subagentowy TTL cache (`workerCacheTtl`) wdrożone. Kompresja poza Bash (Grep/Glob/WebFetch/WebSearch/MCP) nadal do zrobienia — research ostrzega, że sama kompresja tool outputu rzadko obniża billed cost, bo cache dominuje, więc najpierw mierzymy.
+**Status w 1.8.0:** budżet sesji (`/router-budget`, `budgetUsd`, `budgetAction`), subagentowy TTL cache (`workerCacheTtl`) i auto-kompakt modelem Haiku (`/router-compact`, `compactAuto` + progi per tier; wzorzec z MIT modu `haiku-compact`) wdrożone. Kompresja poza Bash (Grep/Glob/WebFetch/WebSearch/MCP) nadal do zrobienia — research ostrzega, że sama kompresja tool outputu rzadko obniża billed cost, bo cache dominuje, więc najpierw mierzymy.
 - **Kompresja poza Bash**: wyniki Grep/Glob, WebFetch/WebSearch i duże odpowiedzi MCP. Pełny zapis do `tee`, linie z błędem nigdy nie są wycinane. Cel: wyniki mniejsze o ≥40%.
 - **Auto-sprzątanie workerów**: zimny lub rozdęty worker jest podmieniany na świeżego bez pytania. Cel: zimne wywołanie zawsze trafia do świeżego workera.
 - **Auto-budżet z domyślnym limitem**: ostrzeżenie przy 80%, po przekroczeniu automatyczne przejście na tańszy tier. Cel: koszt sesji ≤ limit +5%.

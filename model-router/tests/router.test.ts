@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On, TurnUsage } from 'claude-code'
 
 // Stands in for the session: its /model, the judge, the status line and the requests beneath the plugin.
-function world(on: On, opts: { judge?: string; judgeFails?: boolean; model?: string; store?: Record<string, unknown>; commands?: { name: string; description: string; source: string }[] } = {}) {
+function world(on: On, opts: { judge?: string; judgeFails?: boolean; model?: string; store?: Record<string, unknown>; commands?: { name: string; description: string; source: string }[]; messages?: unknown[] } = {}) {
   const sent: { model: string; effort?: unknown }[] = []
   const judged: string[] = []
   const statuses: (string | undefined)[] = []
@@ -14,7 +14,19 @@ function world(on: On, opts: { judge?: string; judgeFails?: boolean; model?: str
   mock.store(on, opts.store)
   const clock = mock.clock(on, { now: 1_000_000 })
   on('session.model', () => ({ value: sessionModel }))
-  on('session.messages', () => ({ value: [] }))
+  on('session.messages', () => ({ value: opts.messages ?? [] }))
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: {
+        tokens: usage === null ? 0 : usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens + usage.output_tokens,
+        window: 1_000_000,
+        percent: 0,
+      },
+      rateLimits: [],
+      cost: { usd: 0 },
+    },
+  }))
   on('session.id', () => ({ value: 'session-0123456789' }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -974,6 +986,7 @@ test('/router-help is the directory of every command and says what each is for',
     ['/router-ultracode', 'Ultracode: `suggest`'],
     ['/router-cache', 'cache hit rate'],
     ['/router-budget', 'session budget'],
+    ['/router-compact', 'auto-compact the session'],
     ['/router-log', 'JSON'],
     ['/router-panel', 'live pane'],
     ['/router-style', 'answer style'],
@@ -984,7 +997,7 @@ test('/router-help is the directory of every command and says what each is for',
   for (const [name, description] of described) {
     expect({ name, listed: help.text.includes(name), described: help.text.includes(description) }).toEqual({ name, listed: true, described: true })
   }
-  for (const sub of ['/router help', '/router start', '/router why', '/router effort', '/router ultracode', '/router cache', '/router budget', '/router log', '/router panel', '/router style', '/router off', '/router on', '/router reset']) {
+  for (const sub of ['/router help', '/router start', '/router why', '/router effort', '/router ultracode', '/router cache', '/router budget', '/router compact', '/router log', '/router panel', '/router style', '/router off', '/router on', '/router reset']) {
     expect(help.text).toContain(sub)
   }
 })
@@ -1100,4 +1113,61 @@ test('the budget warns without changing the model in warn mode', { options: { mo
 
   expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5'])
   expect(w.statuses.at(-1)).toContain('budget spent')
+})
+
+const transcript = (older: string, keptA: string, keptB: string) => [
+  { role: 'user', text: older, toolUses: [] },
+  { role: 'assistant', text: 'work was done', toolUses: [] },
+  { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't-1', text: 'ok', isError: false }] },
+  { role: 'assistant', text: 'renamed', toolUses: [] },
+  { role: 'user', text: keptA, toolUses: [] },
+  { role: 'assistant', text: keptB, toolUses: [] },
+]
+
+test('auto-compact summarizes with Haiku past the Opus threshold', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on, { messages: transcript('fix the deadlock', 'run the tests', 'all green') })
+  await start($)
+
+  await submit($, 'Why does this deadlock only under load?')
+  w.setContext(410_000)
+  await step($)
+  await $.turn.complete({ turnId: 't', answer: 'done', durationMs: 1, isAborted: false, reason: 'answer' } as never)
+
+  expect(w.judged.length).toBe(1)
+  expect(w.judged[0]).toContain('Transcript')
+  expect(w.judged[0]).toContain('fix the deadlock')
+  expect(w.judged[0]).not.toContain('run the tests')
+  expect(w.statuses.some(s => s?.includes('compacting'))).toBe(true)
+})
+
+test('auto-compact on Haiku waits for its higher threshold', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on, { messages: transcript('rename usr to user', 'run the suite', 'all green') })
+  await start($)
+
+  await submit($, '!haiku rename usr to user')
+  w.setContext(410_000)
+  await step($)
+  await $.turn.complete({ turnId: 't', answer: 'done', durationMs: 1, isAborted: false, reason: 'answer' } as never)
+  expect(w.judged.length).toBe(0)
+
+  w.setContext(610_000)
+  await step($)
+  await $.turn.complete({ turnId: 't', answer: 'done', durationMs: 1, isAborted: false, reason: 'answer' } as never)
+  expect(w.judged.length).toBe(1)
+  expect(w.judged[0]).toContain('rename usr to user')
+  expect(w.judged[0]).not.toContain('run the suite')
+})
+
+test('/router-compact shows status and toggles the session switch', { options: { mode: 'route' } }, async ($, on) => {
+  world(on)
+  await start($)
+
+  const shown = await command($, 'router-compact')
+  expect(shown.text).toContain('auto on')
+  expect(shown.text).toContain('Haiku')
+  expect(shown.text).toContain('600k')
+
+  expect((await command($, 'router-compact', 'off')).text).toContain('auto-compact off')
+  expect((await command($, 'router-compact')).text).toContain('(off this session)')
+  expect((await command($, 'router-compact', 'on')).text).toContain('auto-compact on')
 })

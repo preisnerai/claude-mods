@@ -21,6 +21,7 @@ import {
 import type { Verdict } from './classify'
 import { MIN_CHARS, compress, familyOf, keepsSignal, rtkFilter } from './compress'
 import { CACHE, PROFILE, addLedger, cacheHitRate, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, promptOf, requestCost, saved, size, switchDelta, turnCost, usd } from './cost'
+import { summarize } from './compact'
 import type { Cache, LedgerDelta, Profile, Target } from './cost'
 import { WORKERS, crewSection, delegationHint, tierOfWorker, workerName, workerSpec, workerType } from './crew'
 import { STYLE, isStyle } from './style'
@@ -46,6 +47,7 @@ const COMMANDS = [
   { name: 'router-ultracode', description: 'model-router: Ultracode mode (suggest|auto|off)' },
   { name: 'router-cache', description: 'model-router: cache hit rate, reads/writes and warm entries' },
   { name: 'router-budget', description: 'model-router: show or set the session budget' },
+  { name: 'router-compact', description: 'model-router: auto-compact status (on|off|now)' },
   { name: 'router-log', description: 'model-router: last 50 raw decisions as JSON' },
   { name: 'router-panel', description: 'model-router: open the live pane' },
   { name: 'router-style', description: 'model-router: answer style (terse|adhd|off)' },
@@ -66,6 +68,7 @@ const HELP = [
   '- **`/router-ultracode [mode]`** — show or set Ultracode: `suggest`, `auto` or `off`.',
   '- **`/router-cache`** — cache hit rate, reads/writes and warm entries.',
   '- **`/router-budget [usd|off]`** — show or set the session budget.',
+  '- **`/router-compact [on|off|now]`** — auto-compact the session with the cheap model at the tier threshold.',
   '- **`/router-log`** — the last 50 raw decisions as JSON, for calibration.',
   '- **`/router-panel`** — open the live pane.',
   '- **`/router-style [style]`** — show or set the answer style: `terse`, `adhd` or `off`.',
@@ -81,6 +84,7 @@ const HELP = [
   '- **`/router ultracode [mode]`** — same as `/router-ultracode`.',
   '- **`/router cache`** — same as `/router-cache`.',
   '- **`/router budget [usd|off]`** — same as `/router-budget`.',
+  '- **`/router compact [on|off|now]`** — same as `/router-compact`.',
   '- **`/router log`** — same as `/router-log`.',
   '- **`/router panel`** — same as `/router-panel`.',
   '- **`/router style [style]`** — same as `/router-style`.',
@@ -133,6 +137,9 @@ const hasEscalated = atom({ plugin: 'model-router', key: 'hasEscalated' } as con
 const style = atom({ plugin: 'model-router', key: 'style' } as const, null)
 const ledger = atom({ plugin: 'model-router', key: 'ledger' } as const, emptyLedger())
 const budget = atom({ plugin: 'model-router', key: 'budget' } as const, null)
+const compactOff = atom({ plugin: 'model-router', key: 'compactOff' } as const, false)
+const compactPending = atom({ plugin: 'model-router', key: 'compactPending' } as const, false)
+const compactStamp = atom({ plugin: 'model-router', key: 'compactStamp' } as const, null)
 const workers = atom({ plugin: 'model-router', key: 'workers' } as const, [])
 const workerWarm = atom({ plugin: 'model-router', key: 'workerWarm' } as const, {})
 const paneAsked = atom({ plugin: 'model-router', key: 'paneAsked' } as const, false)
@@ -168,6 +175,11 @@ type Config = {
   workerCache: Cache
   budgetUsd: number
   budgetAction: 'warn' | 'downgrade'
+  compactAuto: boolean
+  compactModel: Tier
+  compactAt: Record<Tier, number>
+  compactKeep: number
+  compactInstructions: string
   ultracode: 'suggest' | 'auto' | 'off'
   adapt: boolean
   enableFable: boolean
@@ -1026,6 +1038,38 @@ async function runRouter($: $, args: string, cfg: Config): Promise<{ text: strin
         ].join('\n'),
       }
     }
+    if (sub === 'compact') {
+      if (arg === 'off' || arg === 'on') {
+        await update($, compactOff, () => arg === 'off')
+        return { text: `model-router: auto-compact ${arg} for this session.` }
+      }
+      if (arg === 'now') {
+        await update($, compactPending, () => true)
+        autoCompactRequested = true
+        try {
+          await $.session.compact()
+        } catch (err) {
+          return { text: `model-router: compaction refused here (${err instanceof Error ? err.message : 'unknown'}).` }
+        } finally {
+          autoCompactRequested = false
+          await update($, compactPending, () => false)
+        }
+        return { text: `model-router: compacted with ${NAME[cfg.compactModel]}.` }
+      }
+      const usage = await $.session.usage().then(u => u.context, () => undefined)
+      const tier = await baseTier($, cfg)
+      const tokens = usage?.tokens ?? (await read($, context))
+      const threshold = cfg.compactAt[tier]
+      const due = tokens >= threshold ? ' — due now' : ` — next at ${size(threshold)}`
+      return {
+        text: [
+          `model-router compact — auto ${cfg.compactAuto ? 'on' : 'off'}${(await read($, compactOff)) ? ' (off this session)' : ''} (model ${NAME[cfg.compactModel]})`,
+          `thresholds: Sonnet ${size(cfg.compactAt.sonnet)} · Opus ${size(cfg.compactAt.opus)} · Haiku ${size(cfg.compactAt.haiku)} · Fable ${size(cfg.compactAt.fable)} tokens`,
+          `context: ${size(tokens)} on ${NAME[tier]}${due}`,
+          'The summary is lossy; `/router-compact off` disables it for this session, `now` compacts immediately.',
+        ].join('\n'),
+      }
+    }
     if (sub === 'log') {
       const entries = ((await $.store.get('log')) as unknown[] | undefined) ?? []
       return { text: entries.length ? entries.slice(-50).map(x => JSON.stringify(x)).join('\n') : 'model-router: nothing logged yet' }
@@ -1057,6 +1101,16 @@ export const register: Register = (on, options) => {
     workerCache: CACHE[pick(options.workerCacheTtl, ['1h', '5m'] as const, '5m')],
     budgetUsd: Number(options.budgetUsd ?? 0) || 0,
     budgetAction: pick(options.budgetAction, ['warn', 'downgrade'] as const, 'warn'),
+    compactAuto: flag(options.compactAuto, true),
+    compactModel: pick(options.compactModel, ['haiku', 'sonnet', 'opus'] as const, 'haiku'),
+    compactAt: {
+      haiku: Number(options.compactHaikuAt ?? 600_000) || 600_000,
+      sonnet: Number(options.compactSonnetAt ?? 400_000) || 400_000,
+      opus: Number(options.compactOpusAt ?? 400_000) || 400_000,
+      fable: Number(options.compactFableAt ?? 400_000) || 400_000,
+    } as Record<Tier, number>,
+    compactKeep: Math.max(0, Number(options.compactKeep ?? 4) || 4),
+    compactInstructions: String(options.compactInstructions ?? ''),
     ultracode: pick(options.ultracode, ['suggest', 'auto', 'off'] as const, 'suggest'),
     adapt: pick(options.adapt, ['on', 'off'] as const, 'on') === 'on',
     enableFable: flag(options.enableFable, false),
@@ -1071,6 +1125,8 @@ export const register: Register = (on, options) => {
   }
   // Crew spawns in flight, by tier: two Agent calls in one response must not both pass the check.
   const starting = new Set<Tier>()
+  // Set while the mod's own auto-compact runs, so its session.compact hook answers it.
+  let autoCompactRequested = false
 
   on('session.start', async ($, e, next) => {
     // Not awaited: startup never waits on a process.
@@ -1124,6 +1180,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'router-ultracode' }, async ($, e) => runRouter($, e.args === '' ? 'ultracode' : `ultracode ${e.args}`, cfg))
   on('command.run', { command: 'router-cache' }, async ($) => runRouter($, 'cache', cfg))
   on('command.run', { command: 'router-budget' }, async ($, e) => runRouter($, e.args === '' ? 'budget' : `budget ${e.args}`, cfg))
+  on('command.run', { command: 'router-compact' }, async ($, e) => runRouter($, e.args === '' ? 'compact' : `compact ${e.args}`, cfg))
   on('command.run', { command: 'router-log' }, async ($) => runRouter($, 'log', cfg))
   on('command.run', { command: 'router-panel' }, async ($) => runRouter($, 'panel', cfg))
   on('command.run', { command: 'router-style' }, async ($, e) => runRouter($, `style ${e.args}`, cfg))
@@ -1346,6 +1403,28 @@ export const register: Register = (on, options) => {
         const output = e.usage.output_tokens
         await storeUpdate<Partial<Record<Tier, Partial<Profile>>>>($, 'profile', stored => ({ ...stored, [task]: learn(stored?.[task] ?? {}, PROFILE[task], n, output, added) }))
       }
+      // Auto-compact: past the tier's threshold the session summarizes with the cheap
+      // model, so the expensive model re-caches a short summary instead of the transcript.
+      if (cfg.compactAuto && !(await read($, compactOff)) && !(await read($, compactPending))) {
+        const tokens = await $.session.usage().then(u => u.context.tokens, () => 0)
+        const tier = await baseTier($, cfg)
+        const stamp = await read($, compactStamp)
+        const at = await $.clock.now()
+        if (tokens >= cfg.compactAt[tier] && (stamp === null || at - stamp > 5 * 60_000)) {
+          await update($, compactPending, () => true)
+          await update($, compactStamp, () => at)
+          await status($, `compacting ${size(tokens)} tokens with ${NAME[cfg.compactModel]}`)
+          autoCompactRequested = true
+          try {
+            await $.session.compact()
+          } catch (err) {
+            await status($, `compaction refused: ${err instanceof Error ? err.message : 'unknown'}`)
+          } finally {
+            autoCompactRequested = false
+            await update($, compactPending, () => false)
+          }
+        }
+      }
       const text = await read($, note)
       const cap = (await read($, budget)) ?? cfg.budgetUsd
       const l = await read($, ledger)
@@ -1507,16 +1586,36 @@ export const register: Register = (on, options) => {
 
   // A compaction replaces the conversation with its summary: the caches keep the system prompt and tools.
   on('session.compact', async ($, e, next) => {
+    // Our auto-compact and a manual `/compact <model>` summarize with the cheap
+    // model and replace the conversation; every other compaction is core's.
+    const isMain = e.agentId === undefined
+    const instructions = String(e.instructions ?? '').trim()
+    const first = instructions.split(/\s+/)[0] ?? ''
+    const isAsked = isMain && e.trigger === 'manual' && first === cfg.compactModel
+    if (isMain && (autoCompactRequested || isAsked)) {
+      const transcript = Array.isArray(e.messages) && e.messages.length > 0 ? e.messages : await $.session.messages()
+      const notes = isAsked ? instructions.slice(first.length).trim() || undefined : cfg.compactInstructions || undefined
+      const result = await summarize($, MODEL[cfg.compactModel], transcript, cfg.compactKeep, notes)
+      await update($, compactPending, () => false)
+      if (result.skip !== undefined) {
+        // Never fall through to core here: that would summarize on the expensive model.
+        return { skip: result.skip }
+      }
+      const keep = await read($, prefix)
+      await update($, context, () => keep)
+      await shrinkCaches($, keep)
+      return result
+    }
     const done = await next(e)
     try {
-      if (e.agentId === undefined && e.trigger !== 'precompute' && done.skip === undefined) {
+      if (isMain && e.trigger !== 'precompute' && done.skip === undefined) {
         const keep = await read($, prefix)
         await update($, context, () => done.tokensAfter ?? keep)
         await shrinkCaches($, keep)
       }
     } catch {}
     return done
-  }).catch(($, e, next) => next(e))
+  }).catch(($, e, next) => (next.called ? next(e) : { skip: 'haiku summary failed' }))
 
   // Output economy: one section at the end of the system prompt, inside the prompt cache.
   on('prompt.compose', async ($, e, next) => {

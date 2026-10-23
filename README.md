@@ -140,15 +140,26 @@ With [rtk](https://github.com/rtk-ai/rtk) on your PATH, plain `cargo test`, `pyt
 | `/router-ultracode [suggest\|auto\|off]` | show or set the Ultracode switch for this session |
 | `/router-cache` | cache hit rate, cache reads/writes and the warm entries with their age |
 | `/router-budget [usd\|off]` | show or set a session budget; warns at 80%, can downgrade one tier at 100% |
+| `/router-compact [on\|off\|now]` | auto-compact the session with the cheap model at the tier threshold |
 | `/router-log` | the last 50 routing decisions as JSON lines, for tuning |
 | `/router-panel` | open the live pane |
 | `/router-style terse\|adhd\|off` | answer style for this session |
 | `/router-off` · `/router-on` | stop or resume routing (or crew) for this session |
 | `/router-reset` | clear all-time totals, learned turn profiles, learned corrections and the decision log |
 
-The `/router <sub>` forms (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router cache`, `/router budget …`, `/router start`, `/router help`) work too.
+The `/router <sub>` forms (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router cache`, `/router budget …`, `/router compact …`, `/router start`, `/router help`) work too.
 
 `/router-cache` shows whether the cache is warm and for how long, so a low hit rate or a string of cold starts is visible instead of guessed. `/router-budget` is a session guard measured from the router's list-price ledger: at 80% it warns, at 100% `budgetAction: warn` only warns and `downgrade` moves the next task one tier down. It never overrides a forced `!tier` prompt.
+
+**Auto-compact** fires at the end of a turn whose context passed the tier's threshold (Opus and Sonnet at 400k, Haiku at 600k tokens by default). The summary is written by the cheap model (`haiku`, also manually with `/compact haiku <notes>`), so the next request re-caches a short summary instead of re-warming the whole transcript on the expensive model. The last few messages are kept word for word, and a failed summary leaves the transcript alone rather than falling through to core compaction.
+
+| Setting | Default | |
+|---|---|---|
+| `compactAuto` | `true` | auto-compact at the tier threshold; the summary is lossy |
+| `compactModel` | `haiku` | the model that writes the summary |
+| `compactSonnetAt` / `compactOpusAt` / `compactHaikuAt` / `compactFableAt` | `400k` `400k` `600k` `400k` | context thresholds per tier; `0` disables one tier |
+| `compactKeep` | `4` | recent messages kept word for word |
+| `compactInstructions` | empty | what the summary should keep or stress |
 
 The status line shows each decision (`router: Sonnet·medium (rule .86) · saved ≈$0.41`), and a note beneath each answer names the model and why, for surfaces with no status line.
 
@@ -203,6 +214,7 @@ To make your own mod findable: add the `claude-mod` topic and a `.claude-plugin/
 - [laya-router](https://github.com/marcreichel/laya-router) by Marc Reichel (MIT): the idea of routing on a classifier and the cost of switching mid-session, `/model` taking precedence, stuck detection, the calibration log, and the laya-serve tier descriptions this mod reuses.
 - [rtk](https://github.com/rtk-ai/rtk) by rtk-ai: the output-compression strategies reimplemented here, and the binary this mod calls when it is installed. No rtk code is included.
 - [i-have-adhd](https://github.com/ayghri/i-have-adhd) by Ayoub Ghriss (MIT): the rules behind the `adhd` style.
+- [haiku-compact](https://github.com/kjhq/haiku-compact) (MIT): the compaction pattern this mod adapts — summarize the session with Haiku through the `session.compact` hook, keep the recent tail word for word, never fall back to an expensive-model compaction when the summary fails.
 
 ## Develop
 

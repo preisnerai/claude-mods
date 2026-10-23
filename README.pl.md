@@ -87,19 +87,22 @@ Przetestowane na żywo: dwa zadania dla `worker-haiku` w jednej sesji uruchomił
 | `/router-ultracode [suggest\|auto\|off]` | pokazuje lub ustawia przełącznik Ultracode w tej sesji |
 | `/router-cache` | trafienia cache, odczyty/zapisy i ciepłe wpisy z wiekiem |
 | `/router-budget [usd\|off]` | budżet sesji; ostrzega przy 80%, przy 100% może zejść o tier |
+| `/router-compact [on\|off\|now]` | auto-kompakt sesji tanim modelem przy progu danego tieru |
 | `/router-log` | ostatnie 50 decyzji jako JSON, do strojenia |
 | `/router-panel` | otwórz panel na żywo |
 | `/router-style terse\|adhd\|off` | styl odpowiedzi w tej sesji |
 | `/router-off` · `/router-on` | wyłącz lub włącz routing w tej sesji |
 | `/router-reset` | wyczyść sumy, wyuczone profile tur, wyuczone korekty i log decyzji |
 
-Formy `/router <sub>` (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router cache`, `/router budget …`, `/router start`, `/router help`) też działają.
+Formy `/router <sub>` (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router cache`, `/router budget …`, `/router compact …`, `/router start`, `/router help`) też działają.
 
-`/router-cache` pokazuje, czy cache jest ciepły i jak długo, więc niski hit rate albo seria zimnych startów jest widoczna, a nie zgadywana. `/router-budget` to budżet sesji liczony z list-price leadgera routera: przy 80% ostrzega, przy 100% `budgetAction: warn` tylko ostrzega, a `downgrade` schodzi o jeden tier w następnym zadaniu. Nie nadpisuje wymuszonego `!tier`.
+`/router-cache` pokazuje, czy cache jest ciepły i jak długo, więc niski hit rate albo seria zimnych startów jest widoczna, a nie zgadywana. `/router-budget` to budżet sesji liczony z list-price leadgera routera: przy 80% ostrzega, przy 100% `budgetAction: warn` tylko ostrzega, a `downgrade` schodzi o jeden tier w następnym zadaniu. Nie nadpisze wymuszonego `!tier`.
+
+**Auto-kompakt** odpala się na końcu tury, w której kontekst przekroczył próg tieru (domyślnie Opus i Sonnet przy 400k, Haiku przy 600k tokenów). Podsumowanie pisze tani model (`haiku`; ręcznie też `/compact haiku <notatki>`), więc następne żądanie przeczyta krótkie podsumowanie zamiast ponownie opłacać cały transcript na drogim modelu. Kilka ostatnich wiadomości zostaje słowo w słowo, a nieudane podsumowanie zostawia transcript w spokoju — nigdy nie przepada na kompakt drogiem modelem.
 
 `/router why` odpowiada na „dlaczego nadal Opus?” albo „dlaczego effort nie spadł?”: oddziela błędny odczyt zadania od rachunku cache. Każda decyzja trafia też do `~/.claude/model-router/decisions.json` (ostatnie 500, prompt skrócony do 280 znaków), więc zły wybór modelu albo effortu można skopiować do `tests/classify.test.ts` jako oznaczony przypadek.
 
-Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `layaApiKey`, `enableFable`, effort per poziom, `effortMode`, `workerCacheTtl`, `budgetUsd`, `budgetAction`, `ultracode`, `adapt`, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
+Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `layaApiKey`, `enableFable`, effort per poziom, `effortMode`, `workerCacheTtl`, `budgetUsd`, `budgetAction`, `compactAuto`, `compactModel`, progi kompaktu, `ultracode`, `adapt`, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
 
 ## find-mod
 
