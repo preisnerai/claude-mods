@@ -41,12 +41,12 @@ These are the router's own numbers, for a session on Claude Opus 5.5 with a warm
 
 | Context already cached | Opus → Sonnet for a routine task | Opus → Haiku for a quick task |
 |---:|---|---|
-| 40k tokens | **stays on Opus**: a draw (+$0.002) | **switches**: saves $0.047 |
-| 100k tokens | **stays on Opus**: switching costs $0.23 more | **switches**: saves $0.051 |
-| 150k tokens | **stays on Opus**: switching costs $0.42 more | **stays on Opus**: Haiku's long-context rate makes it $0.063 more |
-| 400k tokens | **stays on Opus**: switching costs $1.37 more | **stays on Opus**: $0.23 more |
+| 40k tokens | **switches**: saves $0.024 | **switches**: saves $0.047 |
+| 100k tokens | **stays on Opus**: switching costs $0.17 more | **switches**: saves $0.051 |
+| 150k tokens | **stays on Opus**: switching costs $0.34 more | **stays on Opus**: Haiku's long-context rate makes it $0.063 more |
+| 400k tokens | **stays on Opus**: switching costs $1.16 more | **stays on Opus**: $0.23 more |
 
-Opus 5.5 and Sonnet 5.5 read cache at the same $0.20/MTok, so mid-session Sonnet saves only on output, and writing the conversation into its cache costs more than that. Haiku 5.5 is 40× cheaper than Opus on input up to 100K tokens, so dropping to it pays even after the rewrite; past 100K it bills a long-context rate five times higher, and a warm Opus is cheaper again. When a model's cache has lapsed (an hour idle), both sides pay the write and the cheaper model wins. Going back to a model whose cache is still warm costs only what changed since. The cache also belongs to the request's effort, so changing effort rewrites it exactly like changing model; on your own model the router keeps your `/effort` unless a task's own effort costs nothing more.
+Opus 5.5 reads cache at $0.20/MTok and Sonnet 5.5 at $0.10 (0.05×), so Sonnet saves on output and on cache reads: a small warm conversation gains from the switch, while a large one pays more to rewrite its cache. Below roughly 50K tokens the Opus → Sonnet switch pays; above it the cache rewrite costs more. Haiku 5.5 is 40× cheaper than Opus on input up to 100K tokens, so dropping to it pays even after the rewrite; past 100K it bills a long-context rate five times higher, and a warm Opus is cheaper again. When a model's cache has lapsed (an hour idle), both sides pay the write and the cheaper model wins. Going back to a model whose cache is still warm costs only what changed since. The cache also belongs to the request's effort, so changing effort rewrites it exactly like changing model; on your own model the router keeps your `/effort` unless a task's own effort costs nothing more.
 
 Harder tasks are about quality, not money: by default the router moves up a tier when a prompt needs it, and shows what the switch cost with the cache re-write. Set `escalate: suggest` to only name the tier in the status line and decide yourself. A `!tier` prefix always switches.
 
@@ -138,13 +138,17 @@ With [rtk](https://github.com/rtk-ai/rtk) on your PATH, plain `cargo test`, `pyt
 | `/router-why` | explain the last decision in plain language: the rule or judge, the tier and effort it wanted, whether the cache math kept the current model, and whether Ultracode was suggested |
 | `/router-effort [auto\|task\|fixed]` | show the effort policy; set the mode for this session |
 | `/router-ultracode [suggest\|auto\|off]` | show or set the Ultracode switch for this session |
+| `/router-cache` | cache hit rate, cache reads/writes and the warm entries with their age |
+| `/router-budget [usd\|off]` | show or set a session budget; warns at 80%, can downgrade one tier at 100% |
 | `/router-log` | the last 50 routing decisions as JSON lines, for tuning |
 | `/router-panel` | open the live pane |
 | `/router-style terse\|adhd\|off` | answer style for this session |
 | `/router-off` · `/router-on` | stop or resume routing (or crew) for this session |
 | `/router-reset` | clear all-time totals, learned turn profiles, learned corrections and the decision log |
 
-The `/router <sub>` forms (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router start`, `/router help`) work too.
+The `/router <sub>` forms (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router cache`, `/router budget …`, `/router start`, `/router help`) work too.
+
+`/router-cache` shows whether the cache is warm and for how long, so a low hit rate or a string of cold starts is visible instead of guessed. `/router-budget` is a session guard measured from the router's list-price ledger: at 80% it warns, at 100% `budgetAction: warn` only warns and `downgrade` moves the next task one tier down. It never overrides a forced `!tier` prompt.
 
 The status line shows each decision (`router: Sonnet·medium (rule .86) · saved ≈$0.41`), and a note beneath each answer names the model and why, for surfaces with no status line.
 
@@ -169,6 +173,9 @@ Shown when you install, and later under `/config`:
 | `enableFable` | `false` | route proofs and new theories to Claude Fable 5.1 |
 | `haikuEffort` … `fableEffort` | `low` `medium` `high` `xhigh` | base effort per tier; Desktop calls `xhigh` Extra. Never `max` or Ultracode |
 | `effortMode` | `auto` | effort per task within the tier, when the cache math allows; `task`: always take the task's effort, even at a cache cost; `fixed`: the tier's effort |
+| `workerCacheTtl` | `5m` | subagent/workflow cache TTL for the worker reuse math; `1h` only if you also set `subagentPromptCacheTtl` to 1h |
+| `budgetUsd` | `0` | session budget in USD; `0` is off |
+| `budgetAction` | `warn` | at 100%: `warn` only warns, `downgrade` moves the next task one tier down |
 | `ultracode` | `suggest` | `auto`: add `ultracode` to the hardest prompts; `off` |
 | `adapt` | `on` | learn routing shifts from `!tier`, `!+`, `!-`, `/model` and `/effort` corrections; `off` |
 | `showNote` | `true` | the line beneath each answer |

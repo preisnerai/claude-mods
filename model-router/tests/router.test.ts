@@ -972,6 +972,8 @@ test('/router-help is the directory of every command and says what each is for',
     ['/router-why', 'last model/effort decision'],
     ['/router-effort', 'effort policy'],
     ['/router-ultracode', 'Ultracode: `suggest`'],
+    ['/router-cache', 'cache hit rate'],
+    ['/router-budget', 'session budget'],
     ['/router-log', 'JSON'],
     ['/router-panel', 'live pane'],
     ['/router-style', 'answer style'],
@@ -982,7 +984,7 @@ test('/router-help is the directory of every command and says what each is for',
   for (const [name, description] of described) {
     expect({ name, listed: help.text.includes(name), described: help.text.includes(description) }).toEqual({ name, listed: true, described: true })
   }
-  for (const sub of ['/router help', '/router start', '/router why', '/router effort', '/router ultracode', '/router log', '/router panel', '/router style', '/router off', '/router on', '/router reset']) {
+  for (const sub of ['/router help', '/router start', '/router why', '/router effort', '/router ultracode', '/router cache', '/router budget', '/router log', '/router panel', '/router style', '/router off', '/router on', '/router reset']) {
     expect(help.text).toContain(sub)
   }
 })
@@ -1044,4 +1046,58 @@ test('/router-ultracode shows and sets the mode', { options: { mode: 'route' } }
   const entered = await submit($, HARD)
   expect((entered as { text?: string }).text).toContain('ultracode')
   expect((await router($, '')).text).toContain('ultracode auto')
+})
+
+test('/router-cache shows the hit rate, reads/writes and warm entries', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, 'Translate this error message into German please')
+  w.setContext(12_000)
+  await step($)
+
+  const cache = await command($, 'router-cache')
+  expect(cache.text).toContain('100% (1/1)')
+  expect(cache.text).toContain('read')
+  expect(cache.text).toContain('warm:')
+  expect(cache.text).toContain('Haiku·low')
+})
+
+test('/router-budget shows and sets the session budget', { options: { mode: 'route' } }, async ($, on) => {
+  world(on)
+  await start($)
+
+  expect((await command($, 'router-budget')).text).toContain('budget — off')
+  expect((await command($, 'router-budget', '10')).text).toContain('budget $10.00')
+  expect((await command($, 'router-budget')).text).toContain('of $10')
+})
+
+test('the budget downgrades the next task one tier when asked', { options: { mode: 'route', budgetAction: 'downgrade' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await command($, 'router-budget', '0.001')
+  w.setUsage({ input_tokens: 1_000, output_tokens: 1_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })
+
+  await submit($, 'Why does this deadlock only under load?')
+  await step($)
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+
+  expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5', 'claude-haiku-5-5'])
+  expect(w.statuses.at(-1)).toContain('budget spent')
+})
+
+test('the budget warns without changing the model in warn mode', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await command($, 'router-budget', '0.001')
+  w.setUsage({ input_tokens: 1_000, output_tokens: 1_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })
+
+  await submit($, 'Why does this deadlock only under load?')
+  await step($)
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+
+  expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5'])
+  expect(w.statuses.at(-1)).toContain('budget spent')
 })

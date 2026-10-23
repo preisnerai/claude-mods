@@ -1,7 +1,7 @@
 {
   "name": "model-router",
-  "version": "1.6.2",
-  "description": "Cache-aware model routing for Claude Code Desktop: each prompt goes to Haiku, Sonnet or Opus by what it needs, and a cheaper model or effort only when that pays after the prompt-cache re-write. Rules read non-code work too, research is Sonnet at most, !+ and !- nudge the tier, /router-help lists every command, /router why explains the decision, and the hardest tasks can run as Ultracode. Crew mode adds warm per-model workers. Bash output is compressed rtk-style and answers drop the filler.",
+  "version": "1.7.0",
+  "description": "Cache-aware model and effort routing for Claude Code Desktop: each prompt goes to Haiku, Sonnet or Opus by what it needs, and a cheaper model or effort only when that pays after the prompt-cache re-write. Rules read non-code work too, research is Sonnet at most, !+ and !- nudge the tier, /router-help lists every command, /router why explains the decision, /router-cache shows the cache hit rate and /router-budget caps the spend. The hardest tasks can run as Ultracode. Crew mode adds warm per-model workers. Bash output is compressed rtk-style and answers drop the filler.",
   "author": {
     "name": "preisnerai"
   },
@@ -178,6 +178,32 @@
         "fixed"
       ],
       "default": "auto"
+    },
+    "workerCacheTtl": {
+      "type": "string",
+      "title": "Subagent cache lifetime",
+      "description": "Claude Code keeps subagent/workflow caches on their own TTL (5m by default), separate from the main conversation. The router uses this TTL for worker reuse math; set 1h only if you also set subagentPromptCacheTtl to 1h.",
+      "options": [
+        "5m",
+        "1h"
+      ],
+      "default": "5m"
+    },
+    "budgetUsd": {
+      "type": "number",
+      "title": "Session budget (USD)",
+      "description": "0 = off. At 80% the status warns; at 100% budgetAction decides what happens. Measured from the router's list-price ledger, not your plan quota.",
+      "default": 0
+    },
+    "budgetAction": {
+      "type": "string",
+      "title": "At the budget",
+      "description": "warn: only warn. downgrade: move the next task one tier down (never a forced prompt).",
+      "options": [
+        "warn",
+        "downgrade"
+      ],
+      "default": "warn"
     },
     "ultracode": {
       "type": "string",

@@ -13,7 +13,7 @@ export type Price = Card & { long?: Card & { above: number } }
 const PRICES: [string, Price][] = (
   [
     ['claude-haiku-5-5', { input: 0.1, output: 0.5, read: 0.01, long: { above: 100_000, input: 0.5, output: 2.5, read: 0.05 } }],
-    ['claude-sonnet-5-5', { input: 2, output: 10, read: 0.2 }],
+    ['claude-sonnet-5-5', { input: 2, output: 10, read: 0.1 }],
     ['claude-opus-5-5', { input: 4, output: 20, read: 0.2 }],
     ['claude-fable-5-1', { input: 10, output: 50, read: 0.25 }],
     ['claude-mythos-5-1', { input: 10, output: 50, read: 0.25 }],
@@ -164,6 +164,11 @@ export function emptyLedger(): Ledger {
     holds: 0,
     judgeCalls: 0,
     judgeUsd: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    uncachedInputTokens: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
     compressions: 0,
     rawChars: 0,
     keptChars: 0,
@@ -190,6 +195,12 @@ export function addLedger(ledger: Ledger, delta: LedgerDelta): Ledger {
 /** Money saved: what the session's own model would have charged, minus what was charged, minus judging. */
 export function saved(ledger: Ledger): number {
   return ledger.baselineUsd - ledger.actualUsd - ledger.judgeUsd
+}
+
+/** Share of requests that read any cache; undefined before the first cacheable request. */
+export function cacheHitRate(ledger: Ledger): number | undefined {
+  const requests = ledger.cacheHits + ledger.cacheMisses
+  return requests === 0 ? undefined : ledger.cacheHits / requests
 }
 
 export function dollars(n: number): string {

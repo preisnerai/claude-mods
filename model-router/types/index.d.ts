@@ -41,6 +41,13 @@ export type Ledger = {
   holds: number
   judgeCalls: number
   judgeUsd: number
+  /** Prompt-cache traffic: tokens read from cache, written to cache, and sent uncached. */
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  uncachedInputTokens: number
+  /** Requests that read any cache vs. wrote a cache entry without a read. */
+  cacheHits: number
+  cacheMisses: number
   /** Bash results compressed, and their size before and after, in characters. */
   compressions: number
   rawChars: number
@@ -86,6 +93,8 @@ declare module 'claude-code' {
       /** /router style for this session; null follows the `style` option. */
       style: Style | null
       ledger: Ledger
+      /** A session budget in USD; null follows the `budgetUsd` option, 0 is off. */
+      budget: number | null
       /** Crew workers by agent id, and the prompt size of each one's last and first request. */
       workers: string[]
       workerWarm: Record<string, { tokens: number; at: number; first: number }>

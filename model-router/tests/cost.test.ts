@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { CACHE, PROFILE, addLedger, cacheKey, dollars, emptyLedger, learn, priceOf, requestCost, saved, size, switchDelta, turnCost, usd } from '../hooks/cost'
+import { CACHE, PROFILE, addLedger, cacheHitRate, cacheKey, dollars, emptyLedger, learn, priceOf, requestCost, saved, size, switchDelta, turnCost, usd } from '../hooks/cost'
 
 function near(actual: number | undefined, expected: number) {
   expect({ actual, near: Math.abs((actual ?? NaN) - expected) < 1e-9 }).toEqual({ actual, near: true })
@@ -17,6 +17,8 @@ function warmOpus(tokens: number, at = NOW - 1_000) {
 
 test('prices resolve from full ids, suffixed ids, provider prefixes and aliases', async () => {
   expect(priceOf('claude-opus-5-5')?.input).toBe(4)
+  expect(priceOf('claude-opus-5-5')?.read).toBe(0.2)
+  expect(priceOf('claude-sonnet-5-5')?.read).toBe(0.1)
   expect(priceOf('claude-opus-5-5[1m]')?.input).toBe(4)
   expect(priceOf('anthropic.claude-opus-5-5')?.input).toBe(4)
   expect(priceOf('claude-opus-5')?.input).toBe(5)
@@ -50,8 +52,13 @@ test('past 100K tokens Haiku costs more than a warm Opus, and the router holds',
   expect((switchDelta(OPUS, HAIKU, 400_000, warmOpus(400_000), NOW, PROFILE.haiku) ?? 0) > 0).toBe(true)
 })
 
-test('dropping Opus 5.5 to Sonnet 5.5 on a warm session costs more than it saves', async () => {
-  for (const context of [40_000, 100_000, 400_000]) {
+test('dropping Opus 5.5 to Sonnet 5.5 pays on a small warm session and holds past ~50K tokens', async () => {
+  // Sonnet 5.5 reads cache at 0.05x input ($0.10/MTok), so a small conversation gains from the switch;
+  // the write of a large conversation into Sonnet's cache still costs more than a warm Opus read.
+  for (const context of [20_000, 40_000]) {
+    expect({ context, saves: (switchDelta(OPUS, SONNET, context, warmOpus(context), NOW, PROFILE.sonnet) ?? 0) < 0 }).toEqual({ context, saves: true })
+  }
+  for (const context of [60_000, 100_000, 400_000]) {
     expect({ context, holds: (switchDelta(OPUS, SONNET, context, warmOpus(context), NOW, PROFILE.sonnet) ?? 0) > 0 }).toEqual({ context, holds: true })
   }
 })
@@ -98,4 +105,9 @@ test('the ledger adds up, turns per tier included', async () => {
 test('money and counts read well at every size', async () => {
   expect([dollars(0), dollars(0.00005), dollars(0.149), dollars(4.2), dollars(42.4), dollars(-0.12)]).toEqual(['$0.000', '$0.0001', '$0.149', '$4.20', '$42', '-$0.120'])
   expect([size(940), size(9_616), size(182_400)]).toEqual(['940', '9.6k', '182k'])
+})
+
+test('cache hit rate counts requests that read any cache', async () => {
+  expect(cacheHitRate(emptyLedger())).toBeUndefined()
+  expect(cacheHitRate(addLedger(emptyLedger(), { cacheHits: 3, cacheMisses: 1 }))).toBe(0.75)
 })

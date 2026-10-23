@@ -20,7 +20,7 @@ import {
 } from './classify'
 import type { Verdict } from './classify'
 import { MIN_CHARS, compress, familyOf, keepsSignal, rtkFilter } from './compress'
-import { CACHE, PROFILE, addLedger, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, promptOf, requestCost, saved, size, switchDelta, turnCost, usd } from './cost'
+import { CACHE, PROFILE, addLedger, cacheHitRate, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, promptOf, requestCost, saved, size, switchDelta, turnCost, usd } from './cost'
 import type { Cache, LedgerDelta, Profile, Target } from './cost'
 import { WORKERS, crewSection, delegationHint, tierOfWorker, workerName, workerSpec, workerType } from './crew'
 import { STYLE, isStyle } from './style'
@@ -44,6 +44,8 @@ const COMMANDS = [
   { name: 'router-why', description: 'model-router: explain the last model/effort decision' },
   { name: 'router-effort', description: 'model-router: show or set effort mode (auto|task|fixed)' },
   { name: 'router-ultracode', description: 'model-router: Ultracode mode (suggest|auto|off)' },
+  { name: 'router-cache', description: 'model-router: cache hit rate, reads/writes and warm entries' },
+  { name: 'router-budget', description: 'model-router: show or set the session budget' },
   { name: 'router-log', description: 'model-router: last 50 raw decisions as JSON' },
   { name: 'router-panel', description: 'model-router: open the live pane' },
   { name: 'router-style', description: 'model-router: answer style (terse|adhd|off)' },
@@ -62,6 +64,8 @@ const HELP = [
   '- **`/router-why`** — explain the last model/effort decision, including cache and Ultracode.',
   '- **`/router-effort [mode]`** — show the effort policy; set `auto`, `task` or `fixed` for this session.',
   '- **`/router-ultracode [mode]`** — show or set Ultracode: `suggest`, `auto` or `off`.',
+  '- **`/router-cache`** — cache hit rate, reads/writes and warm entries.',
+  '- **`/router-budget [usd|off]`** — show or set the session budget.',
   '- **`/router-log`** — the last 50 raw decisions as JSON, for calibration.',
   '- **`/router-panel`** — open the live pane.',
   '- **`/router-style [style]`** — show or set the answer style: `terse`, `adhd` or `off`.',
@@ -75,6 +79,8 @@ const HELP = [
   '- **`/router why`** — same as `/router-why`.',
   '- **`/router effort [mode]`** — same as `/router-effort`.',
   '- **`/router ultracode [mode]`** — same as `/router-ultracode`.',
+  '- **`/router cache`** — same as `/router-cache`.',
+  '- **`/router budget [usd|off]`** — same as `/router-budget`.',
   '- **`/router log`** — same as `/router-log`.',
   '- **`/router panel`** — same as `/router-panel`.',
   '- **`/router style [style]`** — same as `/router-style`.',
@@ -126,6 +132,7 @@ const lastCall = atom({ plugin: 'model-router', key: 'lastCall' } as const, null
 const hasEscalated = atom({ plugin: 'model-router', key: 'hasEscalated' } as const, false)
 const style = atom({ plugin: 'model-router', key: 'style' } as const, null)
 const ledger = atom({ plugin: 'model-router', key: 'ledger' } as const, emptyLedger())
+const budget = atom({ plugin: 'model-router', key: 'budget' } as const, null)
 const workers = atom({ plugin: 'model-router', key: 'workers' } as const, [])
 const workerWarm = atom({ plugin: 'model-router', key: 'workerWarm' } as const, {})
 const paneAsked = atom({ plugin: 'model-router', key: 'paneAsked' } as const, false)
@@ -158,6 +165,9 @@ type Config = {
   cache: Cache
   effort: Record<Tier, Effort>
   effortMode: 'auto' | 'fixed' | 'task'
+  workerCache: Cache
+  budgetUsd: number
+  budgetAction: 'warn' | 'downgrade'
   ultracode: 'suggest' | 'auto' | 'off'
   adapt: boolean
   enableFable: boolean
@@ -241,6 +251,20 @@ async function bill($: $, delta: LedgerDelta) {
   try {
     await storeUpdate<Ledger>($, 'ledger', all => addLedger({ ...emptyLedger(), ...all }, delta))
   } catch {}
+}
+
+type Usage = { input_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
+
+/** Prompt-cache traffic for one request: what it read, wrote and sent uncached. */
+async function cacheBill($: $, u: Usage) {
+  const read = u.cache_read_input_tokens
+  const written = u.cache_creation_input_tokens
+  await bill($, {
+    cacheReadTokens: read,
+    cacheWriteTokens: written,
+    uncachedInputTokens: u.input_tokens,
+    ...(read > 0 ? { cacheHits: 1 } : written > 0 ? { cacheMisses: 1 } : {}),
+  })
 }
 
 async function profiles($: $): Promise<Record<Tier, Profile>> {
@@ -361,8 +385,27 @@ async function apply($: $, given: Verdict, cfg: Config, prompt?: string): Promis
   const isForced = given.source === 'forced'
   // What this person's corrections taught for this kind of task: a tier and an effort shift.
   const learned = cfg.adapt && !isForced ? shiftOf(await biasOf($), categoryOf(given), now) : { tier: 0, effort: 0 }
-  const tier = shiftTier(given.tier, learned.tier, cfg.enableFable)
-  const verdict = tier === given.tier ? given : { ...given, tier, why: `${given.why}, learned ${learned.tier > 0 ? '+' : ''}${learned.tier} tier` }
+  let tier = shiftTier(given.tier, learned.tier, cfg.enableFable)
+  const learnedWhy = tier === given.tier ? '' : `, learned ${learned.tier > 0 ? '+' : ''}${learned.tier} tier`
+  const cap = (await read($, budget)) ?? cfg.budgetUsd
+  const spent = (await read($, ledger)).actualUsd
+  let budgetNote = ''
+  if (!isForced && cap > 0) {
+    if (spent >= cap) {
+      budgetNote = `budget spent (${dollars(spent)} of ${dollars(cap)})`
+      if (cfg.budgetAction === 'downgrade') {
+        const down = prevTier(tier)
+        if (down !== undefined) {
+          tier = down
+          budgetNote += `, downgraded to ${NAME[down]}`
+        }
+      }
+    } else if (spent >= cap * 0.8) {
+      budgetNote = `budget ${Math.min(999, Math.round((spent / cap) * 100))}% used`
+    }
+  }
+  const verdictWhy = `${given.why}${learnedWhy}${budgetNote === '' ? '' : `, ${budgetNote}`}`
+  const verdict = tier === given.tier && verdictWhy === given.why ? given : { ...given, tier, why: verdictWhy }
   await update($, category, () => (isForced ? null : categoryOf(given)))
   await update($, taskTier, () => verdict.tier)
   const session = (await read($, sessionModel)) ?? MODEL[verdict.tier]
@@ -428,6 +471,9 @@ async function apply($: $, given: Verdict, cfg: Config, prompt?: string): Promis
     if (tokens > 0) {
       await bill($, take ? { switches: 1 } : { holds: 1 })
     }
+  }
+  if (budgetNote !== '' && !why.includes(budgetNote)) {
+    why = `${why} · ${budgetNote}`
   }
   const effortNote = cfg.effortMode !== 'fixed' && !isForced && take && wanted !== kept.effort
     ? to.effort === wanted
@@ -582,13 +628,20 @@ async function ultracode($: $, text: string, verdict: Verdict | undefined, cfg: 
   if (cfg.ultracode === 'off' || verdict === undefined || !isHardest(verdict) || ULTRACODE.test(text)) {
     return text
   }
+  const cap = (await read($, budget)) ?? cfg.budgetUsd
+  const spent = (await read($, ledger)).actualUsd
+  const over = cap > 0 && spent >= cap
+  if (over && cfg.ultracode === 'auto') {
+    await status($, `${lastStatus === '' ? '' : `${lastStatus} · `}hard task, but ultracode skipped: budget spent`)
+    return text
+  }
   const chosen = await read($, route)
   await log($, 'ultracode', { mode: cfg.ultracode, tier: verdict.tier, effort: chosen?.effort ?? null, why: verdict.why })
   if (cfg.ultracode === 'auto') {
     await update($, note, n => `${n ?? 'model-router:'} · ran as ultracode`)
     return `${text.trimEnd()}\n\nultracode`
   }
-  await status($, `${lastStatus === '' ? '' : `${lastStatus} · `}hard task: add 'ultracode' to run it as a multi-agent workflow`)
+  await status($, `${lastStatus === '' ? '' : `${lastStatus} · `}hard task: add 'ultracode' (multi-agent; can use 2–30x tokens${over ? '; budget spent' : ''})`)
   return text
 }
 
@@ -682,8 +735,9 @@ async function reuseIsCheaper($: $, agentId: string, tier: Tier, cfg: Config): P
   const now = await $.clock.now()
   const profile = (await profiles($))[tier]
   const key = cacheKey(MODEL[tier], cfg.effort[tier])
-  const reuse = turnCost(MODEL[tier], cfg.effort[tier], state.tokens, { [key]: { tokens: state.tokens, at: state.at } }, now, profile, cfg.cache)
-  const fresh = turnCost(MODEL[tier], cfg.effort[tier], state.first, {}, now, profile, cfg.cache)
+  // Claude Code keeps subagent caches on their own TTL (5m by default), not the main conversation's.
+  const reuse = turnCost(MODEL[tier], cfg.effort[tier], state.tokens, { [key]: { tokens: state.tokens, at: state.at } }, now, profile, cfg.workerCache)
+  const fresh = turnCost(MODEL[tier], cfg.effort[tier], state.first, {}, now, profile, cfg.workerCache)
   return reuse === undefined || fresh === undefined || reuse <= fresh
 }
 
@@ -800,6 +854,14 @@ async function report($: $, cfg: Config): Promise<string> {
   const money = (l: Ledger) =>
     l.baselineUsd === 0 ? '—' : `≈${dollars(saved(l))}: ${dollars(l.actualUsd)} spent instead of ${dollars(l.baselineUsd)}, ${l.routedSteps} requests routed, judge ${l.judgeCalls}× ${dollars(l.judgeUsd)}`
   const kept = (l: Ledger) => (l.compressions === 0 ? '—' : `${l.compressions}× · ${size(l.rawChars)} → ${size(l.keptChars)} chars · ≈${size((l.rawChars - l.keptChars) / 4)} tokens kept out of context`)
+  const cache = (l: Ledger) => {
+    const rate = cacheHitRate(l)
+    return rate === undefined ? '—' : `${Math.round(rate * 100)}% · ${size(l.cacheReadTokens)} read / ${size(l.cacheWriteTokens)} written`
+  }
+  const cap = (await read($, budget)) ?? cfg.budgetUsd
+  const budgetLine = cap > 0
+    ? `${dollars(session.actualUsd)} of ${dollars(cap)} (${Math.min(999, Math.round((session.actualUsd / cap) * 100))}%)`
+    : 'off'
   return [
     `model-router · ${cfg.mode} · ${manual ? 'off (/model was changed by hand; /router on resumes)' : r === null ? 'not routed yet' : describe(r)} · style ${s} · compression ${cfg.compress ? 'on' : 'off'}${cfg.useRtk && (await rtk) ? ' (rtk)' : ''}`,
     '',
@@ -808,9 +870,10 @@ async function report($: $, cfg: Config): Promise<string> {
     `| turns | ${turns(session)} | ${turns(all)} |`,
     `| saved vs ${base} | ${money(session)} | ${money(all)} |`,
     `| switches / holds | ${session.switches} / ${session.holds} | ${all.switches} / ${all.holds} |`,
+    `| cache | ${cache(session)} | ${cache(all)} |`,
     `| bash output | ${kept(session)} | ${kept(all)} |`,
     '',
-    `learned: ${cfg.adapt ? (learned ?? 'nothing yet') : 'off'} · effort ${cfg.effortMode} · ultracode ${cfg.ultracode}`,
+    `learned: ${cfg.adapt ? (learned ?? 'nothing yet') : 'off'} · effort ${cfg.effortMode} · ultracode ${cfg.ultracode} · budget ${budgetLine}`,
     '',
     '`/router why` · `/router off|on` · `/router style terse|adhd|off` · `/router log` · `/router reset` · prefix a prompt with `!haiku` `!sonnet` `!opus`, or nudge with `!+` `!-`',
   ].join('\n')
@@ -912,6 +975,57 @@ async function runRouter($: $, args: string, cfg: Config): Promise<{ text: strin
         ].join('\n'),
       }
     }
+    if (sub === 'cache') {
+      const l = await read($, ledger)
+      const all = { ...emptyLedger(), ...((await $.store.get('ledger')) as Ledger | undefined) }
+      const now = await $.clock.now()
+      const warmNow = await read($, warm)
+      const rate = (x: Ledger) => {
+        const r = cacheHitRate(x)
+        return r === undefined ? '—' : `${Math.round(r * 100)}% (${x.cacheHits}/${x.cacheHits + x.cacheMisses})`
+      }
+      const entries = Object.entries(warmNow)
+        .sort((a, b) => b[1].tokens - a[1].tokens)
+        .slice(0, 6)
+        .map(([key, v]) => {
+          const [model = key, effort = ''] = key.split('@')
+          const tier = tierOf(model)
+          const age = Math.max(0, now - v.at)
+          const left = cfg.cache.ttlMs - age
+          const label = `${tier === undefined ? model : NAME[tier]}·${effortLabel(effort)}`
+          return `- ${label} — ${size(v.tokens)} tokens, ${Math.max(0, Math.round(age / 60_000))} min old, ${left > 0 ? `${Math.max(0, Math.round(left / 60_000))} min left` : 'expired'}`
+        })
+      return {
+        text: [
+          `model-router cache — TTL ${cfg.cache.ttlMs === CACHE['5m'].ttlMs ? '5m' : '1h'} · session ${rate(l)} · all time ${rate(all)}`,
+          `session tokens: ${size(l.cacheReadTokens)} read / ${size(l.cacheWriteTokens)} written / ${size(l.uncachedInputTokens)} uncached`,
+          entries.length === 0 ? 'no warm cache entries yet.' : 'warm:',
+          ...entries,
+          'Cache stats count all requests; warm entries show the main loop. Crew workers keep their own caches.',
+        ].join('\n'),
+      }
+    }
+    if (sub === 'budget') {
+      const cap = (await read($, budget)) ?? cfg.budgetUsd
+      if (arg === 'off' || arg === '0') {
+        await update($, budget, () => 0)
+        return { text: 'model-router: budget off for this session.' }
+      }
+      const n = Number(arg)
+      if (Number.isFinite(n) && n > 0) {
+        await update($, budget, () => n)
+        return { text: `model-router: budget $${n.toFixed(2)} for this session (action ${cfg.budgetAction}).` }
+      }
+      const l = await read($, ledger)
+      const pct = cap > 0 ? Math.min(999, Math.round((l.actualUsd / cap) * 100)) : undefined
+      return {
+        text: [
+          cap > 0 ? `model-router budget — ${dollars(l.actualUsd)} of ${dollars(cap)} (${pct}%) · action ${cfg.budgetAction}` : 'model-router budget — off',
+          'At 80% the status warns; at 100% `warn` only warns, `downgrade` moves the next task one tier down.',
+          'Set it for this session with `/router-budget 10`; `/router-budget off` clears it. The default is in /config.',
+        ].join('\n'),
+      }
+    }
     if (sub === 'log') {
       const entries = ((await $.store.get('log')) as unknown[] | undefined) ?? []
       return { text: entries.length ? entries.slice(-50).map(x => JSON.stringify(x)).join('\n') : 'model-router: nothing logged yet' }
@@ -940,6 +1054,9 @@ export const register: Register = (on, options) => {
     // Never `max` or `ultracode` as a router-sent effort: they become xhigh (Extra); Ultracode is the keyword switch.
     effort: Object.fromEntries(ORDER.map(t => [t, clampEffort(options[`${t}Effort`], EFFORT[t])])) as Record<Tier, Effort>,
     effortMode: pick(options.effortMode, ['auto', 'fixed', 'task'] as const, 'auto'),
+    workerCache: CACHE[pick(options.workerCacheTtl, ['1h', '5m'] as const, '5m')],
+    budgetUsd: Number(options.budgetUsd ?? 0) || 0,
+    budgetAction: pick(options.budgetAction, ['warn', 'downgrade'] as const, 'warn'),
     ultracode: pick(options.ultracode, ['suggest', 'auto', 'off'] as const, 'suggest'),
     adapt: pick(options.adapt, ['on', 'off'] as const, 'on') === 'on',
     enableFable: flag(options.enableFable, false),
@@ -1005,6 +1122,8 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'router-why' }, async ($) => runRouter($, 'why', cfg))
   on('command.run', { command: 'router-effort' }, async ($, e) => runRouter($, e.args === '' ? 'effort' : `effort ${e.args}`, cfg))
   on('command.run', { command: 'router-ultracode' }, async ($, e) => runRouter($, e.args === '' ? 'ultracode' : `ultracode ${e.args}`, cfg))
+  on('command.run', { command: 'router-cache' }, async ($) => runRouter($, 'cache', cfg))
+  on('command.run', { command: 'router-budget' }, async ($, e) => runRouter($, e.args === '' ? 'budget' : `budget ${e.args}`, cfg))
   on('command.run', { command: 'router-log' }, async ($) => runRouter($, 'log', cfg))
   on('command.run', { command: 'router-panel' }, async ($) => runRouter($, 'panel', cfg))
   on('command.run', { command: 'router-style' }, async ($, e) => runRouter($, `style ${e.args}`, cfg))
@@ -1124,6 +1243,7 @@ export const register: Register = (on, options) => {
         const u = result.usage
         const id = e.agentId
         if (u !== null && (await read($, workers)).includes(id)) {
+          await cacheBill($, u)
           const prompt = promptOf(u)
           await update($, workerWarm, w => ({ ...w, [id]: { tokens: prompt, at: startedAt, first: w[id]?.first ?? prompt } }))
         }
@@ -1176,6 +1296,7 @@ export const register: Register = (on, options) => {
     try {
       const u = result.usage
       if (u !== null) {
+        await cacheBill($, u)
         const prompt = promptOf(u)
         const total = prompt + u.output_tokens
         const sent: Sent = { model: routed.model, effort: routed.effort ?? null }
@@ -1226,8 +1347,22 @@ export const register: Register = (on, options) => {
         await storeUpdate<Partial<Record<Tier, Partial<Profile>>>>($, 'profile', stored => ({ ...stored, [task]: learn(stored?.[task] ?? {}, PROFILE[task], n, output, added) }))
       }
       const text = await read($, note)
-      if (cfg.showNote && text !== null) {
-        return { ...done, text }
+      const cap = (await read($, budget)) ?? cfg.budgetUsd
+      const l = await read($, ledger)
+      const budgetNote = cap <= 0
+        ? ''
+        : l.actualUsd >= cap
+          ? `budget spent (${dollars(l.actualUsd)} of ${dollars(cap)})`
+          : l.actualUsd >= cap * 0.8
+            ? `budget ${Math.min(999, Math.round((l.actualUsd / cap) * 100))}% used`
+            : ''
+      const shown = text === null
+        ? (budgetNote === '' ? null : `model-router: ${budgetNote}`)
+        : budgetNote === '' || text.includes('budget')
+          ? text
+          : `${text} · ${budgetNote}`
+      if (cfg.showNote && shown !== null) {
+        return { ...done, text: shown }
       }
     } catch {}
     return done

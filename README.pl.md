@@ -34,12 +34,12 @@ Liczby z modelu kosztów routera, dla sesji na Claude Opus 5.5 z ciepłym cache:
 
 | Kontekst w cache | Opus → Sonnet, zwykłe zadanie | Opus → Haiku, szybkie zadanie |
 |---:|---|---|
-| 40 tys. tokenów | **zostaje na Opusie**: remis (+$0.002) | **przełącza**: oszczędza $0.047 |
-| 100 tys. | **zostaje**: +$0.23 | **przełącza**: −$0.051 |
-| 150 tys. | **zostaje**: +$0.42 | **zostaje**: +$0.063 (stawka Haiku powyżej 100 tys.) |
-| 400 tys. | **zostaje**: +$1.37 | **zostaje**: +$0.23 |
+| 40 tys. tokenów | **przełącza**: oszczędza $0.024 | **przełącza**: oszczędza $0.047 |
+| 100 tys. | **zostaje**: +$0.17 | **przełącza**: −$0.051 |
+| 150 tys. | **zostaje**: +$0.34 | **zostaje**: +$0.063 (stawka Haiku powyżej 100 tys.) |
+| 400 tys. | **zostaje**: +$1.16 | **zostaje**: +$0.23 |
 
-Opus 5.5 i Sonnet 5.5 czytają cache po tej samej cenie $0.20/MTok, więc w środku sesji Sonnet oszczędza tylko na wyjściu, a zapis rozmowy do jego cache kosztuje więcej. Haiku 5.5 jest 40× tańszy od Opusa na wejściu do 100 tys. tokenów, więc zejście na niego opłaca się nawet z zapisem; powyżej 100 tys. płaci stawkę 5× wyższą i ciepły Opus znów jest tańszy. Gdy cache modelu wygasł (godzina bezczynności), obie strony płacą za zapis i wygrywa tańszy model. Cache zależy też od effort, więc **zmiana effortu zrzuca cache tak samo jak zmiana modelu**; na Twoim modelu router zostawia Twój `/effort`, chyba że effort zadania nie kosztuje więcej.
+Opus 5.5 czyta cache po $0.20/MTok, a Sonnet 5.5 po $0.10 (0.05×), więc Sonnet oszczędza na wyjściu i na odczycie cache: mała ciepła rozmowa zyskuje na przejściu, duża płaci więcej za przebudowę cache. Poniżej ok. 50 tys. tokenów przejście Opus → Sonnet się opłaca; powyżej koszt przebudowy jest większy. Haiku 5.5 jest 40× tańszy od Opusa na wejściu do 100 tys. tokenów, więc zejście na niego opłaca się nawet z zapisem; powyżej 100 tys. płaci stawkę 5× wyższą i ciepły Opus znów jest tańszy. Gdy cache modelu wygasł (godzina bezczynności), obie strony płacą za zapis i wygrywa tańszy model. Cache zależy też od effort, więc **zmiana effortu zrzuca cache tak samo jak zmiana modelu**; na Twoim modelu router zostawia Twój `/effort`, chyba że effort zadania nie kosztuje więcej.
 
 Trudniejsze zadania to kwestia jakości, nie pieniędzy: domyślnie router podnosi poziom, gdy prompt tego wymaga, i pokazuje koszt zmiany. Ustaw `escalate: suggest`, żeby router tylko podpowiadał w linii statusu.
 
@@ -85,17 +85,21 @@ Przetestowane na żywo: dwa zadania dla `worker-haiku` w jednej sesji uruchomił
 | `/router-why` | po ludzku wyjaśnia ostatnią decyzję: regułę albo sędziego, tier i effort, których chciał, czy rachunek cache zatrzymał bieżący model i czy zasugerowano Ultracode |
 | `/router-effort [auto\|task\|fixed]` | pokazuje politykę effortu; ustawia tryb w tej sesji |
 | `/router-ultracode [suggest\|auto\|off]` | pokazuje lub ustawia przełącznik Ultracode w tej sesji |
+| `/router-cache` | trafienia cache, odczyty/zapisy i ciepłe wpisy z wiekiem |
+| `/router-budget [usd\|off]` | budżet sesji; ostrzega przy 80%, przy 100% może zejść o tier |
 | `/router-log` | ostatnie 50 decyzji jako JSON, do strojenia |
 | `/router-panel` | otwórz panel na żywo |
 | `/router-style terse\|adhd\|off` | styl odpowiedzi w tej sesji |
 | `/router-off` · `/router-on` | wyłącz lub włącz routing w tej sesji |
 | `/router-reset` | wyczyść sumy, wyuczone profile tur, wyuczone korekty i log decyzji |
 
-Formy `/router <sub>` (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router start`, `/router help`) też działają.
+Formy `/router <sub>` (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router cache`, `/router budget …`, `/router start`, `/router help`) też działają.
+
+`/router-cache` pokazuje, czy cache jest ciepły i jak długo, więc niski hit rate albo seria zimnych startów jest widoczna, a nie zgadywana. `/router-budget` to budżet sesji liczony z list-price leadgera routera: przy 80% ostrzega, przy 100% `budgetAction: warn` tylko ostrzega, a `downgrade` schodzi o jeden tier w następnym zadaniu. Nie nadpisuje wymuszonego `!tier`.
 
 `/router why` odpowiada na „dlaczego nadal Opus?” albo „dlaczego effort nie spadł?”: oddziela błędny odczyt zadania od rachunku cache. Każda decyzja trafia też do `~/.claude/model-router/decisions.json` (ostatnie 500, prompt skrócony do 280 znaków), więc zły wybór modelu albo effortu można skopiować do `tests/classify.test.ts` jako oznaczony przypadek.
 
-Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `layaApiKey`, `enableFable`, effort per poziom, `effortMode`, `ultracode`, `adapt`, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
+Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `layaApiKey`, `enableFable`, effort per poziom, `effortMode`, `workerCacheTtl`, `budgetUsd`, `budgetAction`, `ultracode`, `adapt`, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
 
 ## find-mod
 
