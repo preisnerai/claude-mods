@@ -100,9 +100,11 @@ Formy `/router <sub>` (`/router why`, `/router log`, `/router off`, `/router on`
 
 **Auto-kompakt** odpala się na końcu tury, w której kontekst przekroczył próg tieru (domyślnie Opus i Sonnet przy 400k, Haiku przy 600k tokenów). Podsumowanie pisze tani model (`haiku`; ręcznie też `/compact haiku <notatki>`), więc następne żądanie przeczyta krótkie podsumowanie zamiast ponownie opłacać cały transcript na drogim modelu. Kilka ostatnich wiadomości zostaje słowo w słowo, a nieudane podsumowanie zostawia transcript w spokoju — nigdy nie przepada na kompakt drogiem modelem.
 
-`/router why` odpowiada na „dlaczego nadal Opus?” albo „dlaczego effort nie spadł?”: oddziela błędny odczyt zadania od rachunku cache. Każda decyzja trafia też do `~/.claude/model-router/decisions.json` (ostatnie 500, prompt skrócony do 280 znaków), więc zły wybór modelu albo effortu można skopiować do `tests/classify.test.ts` jako oznaczony przypadek.
+Status line pokazuje każdą decyzję (`router: Sonnet·medium (rule .86) · saved ≈$0.41`), a nota pod odpowiedzią nazywa model i powód — i niesie oszczędności: dolary oraz, gdzie są realne, tokeny (wynik kompresji i kompaktu, `≈120k tok saved`; routing oszczędza dolary za token, nie same tokeny). Przy włączonym `promptTag` twoja wysłana wiadomość kończy się małą linią `*router: Opus·medium*` — planowany model i effort; `/router why` poda ostateczną decyzję, jeśli cache math coś przytrzymał.
 
-Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `layaApiKey`, `enableFable`, effort per poziom, `effortMode`, `workerCacheTtl`, `budgetUsd`, `budgetAction`, `compactAuto`, `compactModel`, progi kompaktu, `ultracode`, `adapt`, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
+`/router why` odpowiada na „dlaczego nadal Opus?" albo „dlaczego effort nie spadł?" — oddziela błędny odczyt zadania od rachunku cache. Każda decyzja trafia też do `~/.claude/model-router/decisions.json` (ostatnie 500, prompt skrócony do 280 znaków), więc zły wybór modelu albo effortu można skopiować do `tests/classify.test.ts` jako oznaczony przypadek.
+
+Ustawienia (`mode`, `orchestrator`, `escalate`, `style`, `compress`, `useRtk`, `cacheTtl`, `judge`, `layaUrl`, `layaApiKey`, `enableFable`, effort per poziom, `effortMode`, `workerCacheTtl`, `budgetUsd`, `budgetAction`, `promptTag`, `compactAuto`, `compactModel`, progi kompaktu, `ultracode`, `adapt`, `showNote`) pojawiają się przy instalacji i w `/config`. Pełny opis w [README po angielsku](README.md#settings).
 
 ## find-mod
 

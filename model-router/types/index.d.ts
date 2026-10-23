@@ -52,6 +52,8 @@ export type Ledger = {
   compressions: number
   rawChars: number
   keptChars: number
+  /** Tokens this mod kept off every later request: tool output compressed away, and transcript a compaction summarized away. */
+  tokensSaved: number
 }
 
 /** What a request was sent with. */

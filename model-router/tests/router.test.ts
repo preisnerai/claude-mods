@@ -2,11 +2,15 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On, TurnUsage } from 'claude-code'
 
+// The prompt row carries the mod's tag after the typed words; tests of the prompt's own words drop it.
+const bare = (text: string | undefined) => (text ?? '').replace(/\n\n\*router: [^*]+\*$/, '')
+
 // Stands in for the session: its /model, the judge, the status line and the requests beneath the plugin.
 function world(on: On, opts: { judge?: string; judgeFails?: boolean; model?: string; store?: Record<string, unknown>; commands?: { name: string; description: string; source: string }[]; messages?: unknown[] } = {}) {
   const sent: { model: string; effort?: unknown }[] = []
   const judged: string[] = []
   const statuses: (string | undefined)[] = []
+  const rowTexts: string[] = []
   const written: Record<string, string> = {}
   let sessionModel = opts.model ?? 'claude-opus-5-5'
   let usage: TurnUsage | null = null
@@ -49,7 +53,10 @@ function world(on: On, opts: { judge?: string; judgeFails?: boolean; model?: str
     return { value: undefined }
   })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
-  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('prompt.submit', ($, e) => {
+    rowTexts.push(e.text)
+    return { text: e.text }
+  })
   on('turn.step', async function* ($, e) {
     sent.push({ model: e.model, effort: e.effort })
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: usage === null ? null : { ...usage, model: e.model } }
@@ -62,6 +69,7 @@ function world(on: On, opts: { judge?: string; judgeFails?: boolean; model?: str
     sent,
     judged,
     statuses,
+    rowTexts,
     written,
     clock,
     setModel: (m: string) => (sessionModel = m),
@@ -197,7 +205,7 @@ test('a !tier prefix forces the model and is stripped', { options: { mode: 'rout
   const entered = await submit($, '!opus rename usr to user')
   await step($)
 
-  expect(entered.text).toBe('rename usr to user')
+  expect(bare(entered.text)).toBe('rename usr to user')
   expect(w.sent).toEqual([{ model: 'claude-opus-5-5', effort: 'xhigh' }])
 })
 
@@ -646,7 +654,7 @@ test('with routing off a !tier prefix is removed and the status says it was igno
   const entered = await submit($, '!opus redesign the plugin loader')
   await step($)
 
-  expect(entered.text).toBe('redesign the plugin loader')
+  expect(bare(entered.text)).toBe('redesign the plugin loader')
   expect(w.statuses.at(-1)).toContain('!opus was ignored')
   expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5'])
 })
@@ -788,16 +796,16 @@ test('ultracode suggest names it in the status line and leaves the prompt alone'
   const out = await submit($, HARD)
 
   expect(w.statuses.at(-1)).toContain("add 'ultracode'")
-  expect((out as { text?: string }).text).toBe(HARD)
+  expect(bare((out as { text?: string }).text)).toBe(HARD)
 })
 
 test('ultracode auto adds the keyword to a hard prompt, once, and not to an easy one', { options: { mode: 'route', ultracode: 'auto' } }, async ($, on) => {
   world(on)
   await start($)
 
-  expect(((await submit($, HARD)) as { text?: string }).text).toBe(`${HARD}\n\nultracode`)
-  expect(((await submit($, `${HARD} ultracode`)) as { text?: string }).text).toBe(`${HARD} ultracode`)
-  expect(((await submit($, 'Translate this sentence into French for me')) as { text?: string }).text).toBe('Translate this sentence into French for me')
+  expect(bare(((await submit($, HARD)) as { text?: string }).text)).toBe(`${HARD}\n\nultracode`)
+  expect(bare(((await submit($, `${HARD} ultracode`)) as { text?: string }).text)).toBe(`${HARD} ultracode`)
+  expect(bare(((await submit($, 'Translate this sentence into French for me')) as { text?: string }).text)).toBe('Translate this sentence into French for me')
 })
 
 test('ultracode off says nothing', { options: { mode: 'route', ultracode: 'off' } }, async ($, on) => {
@@ -807,7 +815,7 @@ test('ultracode off says nothing', { options: { mode: 'route', ultracode: 'off' 
   const out = await submit($, HARD)
 
   expect(w.statuses.some(s => s?.includes('ultracode'))).toBe(false)
-  expect((out as { text?: string }).text).toBe(HARD)
+  expect(bare((out as { text?: string }).text)).toBe(HARD)
 })
 
 test('a !tier override is learned for that kind of task, shown, fades and is reset', { options: { mode: 'route' } }, async ($, on) => {
@@ -854,8 +862,8 @@ test('!+ lifts the current route one tier and !- lowers it', { options: { mode: 
   const down = await submit($, '!- translate this error message into German')
   await step($)
 
-  expect(up.text).toBe('add a dark mode toggle to the settings page')
-  expect(down.text).toBe('translate this error message into German')
+  expect(bare(up.text)).toBe('add a dark mode toggle to the settings page')
+  expect(bare(down.text)).toBe('translate this error message into German')
   expect(w.sent.map(s => s.model)).toEqual(['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'])
 })
 
@@ -866,7 +874,7 @@ test('!+ at the top tier says so and leaves the model alone', { options: { mode:
   const entered = await submit($, '!+ refactor the auth module')
   await step($)
 
-  expect(entered.text).toBe('refactor the auth module')
+  expect(bare(entered.text)).toBe('refactor the auth module')
   expect(w.statuses.at(-1)).toContain('already at the strongest tier')
   expect(w.sent.map(s => s.model)).toEqual(['claude-opus-5-5'])
 })
@@ -1138,6 +1146,9 @@ test('auto-compact summarizes with Haiku past the Opus threshold', { options: { 
   expect(w.judged[0]).toContain('fix the deadlock')
   expect(w.judged[0]).not.toContain('run the tests')
   expect(w.statuses.some(s => s?.includes('compacting'))).toBe(true)
+
+  const shown = await command($, 'router')
+  expect(shown.text).toContain('tokens kept out')
 })
 
 test('auto-compact on Haiku waits for its higher threshold', { options: { mode: 'route' } }, async ($, on) => {
@@ -1170,4 +1181,26 @@ test('/router-compact shows status and toggles the session switch', { options: {
   expect((await command($, 'router-compact', 'off')).text).toContain('auto-compact off')
   expect((await command($, 'router-compact')).text).toContain('(off this session)')
   expect((await command($, 'router-compact', 'on')).text).toContain('auto-compact on')
+})
+
+test('the prompt row ends with the planned model and effort', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await submit($, 'Why does this deadlock only under load?')
+  const row = w.rowTexts.at(-1) ?? ''
+  expect(row).toContain('*router: Opus·')
+  expect(row.endsWith('*')).toBe(true)
+})
+
+test('the prompt tag never touches a command or a prompt typed with routing off', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  await $.prompt.submit({ text: '/router why', command: { name: 'router-why', args: '' } } as never)
+  expect(w.rowTexts.at(-1)).toBe('/router why')
+
+  await command($, 'router-off')
+  await submit($, 'plain hello')
+  expect(w.rowTexts.at(-1)).toBe('plain hello')
 })

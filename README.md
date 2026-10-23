@@ -161,7 +161,7 @@ The `/router <sub>` forms (`/router why`, `/router log`, `/router off`, `/router
 | `compactKeep` | `4` | recent messages kept word for word |
 | `compactInstructions` | empty | what the summary should keep or stress |
 
-The status line shows each decision (`router: Sonnet·medium (rule .86) · saved ≈$0.41`), and a note beneath each answer names the model and why, for surfaces with no status line.
+The status line shows each decision (`router: Sonnet·medium (rule .86) · saved ≈$0.41`), and a note beneath each answer names the model and why, for surfaces with no status line. The same note carries the session savings, and token savings where they are real: compressed tool output and the transcript a compaction summarized away (`≈120k tok saved`), since routing saves dollars per token, not tokens themselves. With `promptTag` on, the message you send also ends with a small `*router: Opus·medium*` line naming the planned model and effort; `/router why` gives the final call when the cache math held or switched.
 
 `/router why` is the answer to "why is it still on Opus?" or "why did the effort not drop?": it separates a misread task from the cache math. Every decision is also mirrored to `~/.claude/model-router/decisions.json` (the last 500, prompts truncated to 280 characters), so a bad route or a bad effort can be copied into `tests/classify.test.ts` as a labelled case.
 
@@ -190,6 +190,7 @@ Shown when you install, and later under `/config`:
 | `ultracode` | `suggest` | `auto`: add `ultracode` to the hardest prompts; `off` |
 | `adapt` | `on` | learn routing shifts from `!tier`, `!+`, `!-`, `/model` and `/effort` corrections; `off` |
 | `showNote` | `true` | the line beneath each answer |
+| `promptTag` | `true` | the `router: model·effort` tag at the end of your sent message |
 
 Model ids per tier are at the top of [`model-router/hooks/register.ts`](model-router/hooks/register.ts). On Bedrock or Vertex, put your provider's ids there.
 

@@ -21,7 +21,7 @@ import {
 import type { Verdict } from './classify'
 import { MIN_CHARS, compress, familyOf, keepsSignal, rtkFilter } from './compress'
 import { CACHE, PROFILE, addLedger, cacheHitRate, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, promptOf, requestCost, saved, size, switchDelta, turnCost, usd } from './cost'
-import { summarize } from './compact'
+import { estimateTokens, summarize } from './compact'
 import type { Cache, LedgerDelta, Profile, Target } from './cost'
 import { WORKERS, crewSection, delegationHint, tierOfWorker, workerName, workerSpec, workerType } from './crew'
 import { STYLE, isStyle } from './style'
@@ -175,6 +175,7 @@ type Config = {
   workerCache: Cache
   budgetUsd: number
   budgetAction: 'warn' | 'downgrade'
+  promptTag: boolean
   compactAuto: boolean
   compactModel: Tier
   compactAt: Record<Tier, number>
@@ -294,8 +295,9 @@ let lastStatus = ''
 async function status($: $, text: string) {
   lastStatus = text
   const l = await read($, ledger)
+  const tok = l.tokensSaved > 0 ? ` · ≈${size(l.tokensSaved)} tok` : ''
   const money = l.routedSteps > 0 ? ` · saved ≈${dollars(saved(l))}` : ''
-  $.ui.status(`router: ${text}${money}`)
+  $.ui.status(`router: ${text}${money}${tok}`)
 }
 
 /**
@@ -850,7 +852,7 @@ async function shrink($: $, block: Block, cfg: Config): Promise<Block> {
   if (out.length > raw.length * 0.9) {
     return block
   }
-  await bill($, { compressions: 1, rawChars: raw.length, keptChars: out.length })
+  await bill($, { compressions: 1, rawChars: raw.length, keptChars: out.length, tokensSaved: Math.round((raw.length - out.length) / 4) })
   return { ...block, content: typeof block.content === 'string' ? out : [{ type: 'text', text: out }] }
 }
 
@@ -864,7 +866,8 @@ async function report($: $, cfg: Config): Promise<string> {
   const learned = cfg.adapt ? learnedLine(await biasOf($), await $.clock.now()) : undefined
   const turns = (l: Ledger) => ORDER.filter(t => l.turns[t] > 0).map(t => `${NAME[t]} ${l.turns[t]}`).join(' · ') || '—'
   const money = (l: Ledger) =>
-    l.baselineUsd === 0 ? '—' : `≈${dollars(saved(l))}: ${dollars(l.actualUsd)} spent instead of ${dollars(l.baselineUsd)}, ${l.routedSteps} requests routed, judge ${l.judgeCalls}× ${dollars(l.judgeUsd)}`
+    (l.baselineUsd === 0 ? '—' : `≈${dollars(saved(l))}: ${dollars(l.actualUsd)} spent instead of ${dollars(l.baselineUsd)}, ${l.routedSteps} requests routed, judge ${l.judgeCalls}× ${dollars(l.judgeUsd)}`)
+    + (l.tokensSaved > 0 ? ` · ≈${size(l.tokensSaved)} tokens kept out` : '')
   const kept = (l: Ledger) => (l.compressions === 0 ? '—' : `${l.compressions}× · ${size(l.rawChars)} → ${size(l.keptChars)} chars · ≈${size((l.rawChars - l.keptChars) / 4)} tokens kept out of context`)
   const cache = (l: Ledger) => {
     const rate = cacheHitRate(l)
@@ -1101,6 +1104,7 @@ export const register: Register = (on, options) => {
     workerCache: CACHE[pick(options.workerCacheTtl, ['1h', '5m'] as const, '5m')],
     budgetUsd: Number(options.budgetUsd ?? 0) || 0,
     budgetAction: pick(options.budgetAction, ['warn', 'downgrade'] as const, 'warn'),
+    promptTag: flag(options.promptTag, true),
     compactAuto: flag(options.compactAuto, true),
     compactModel: pick(options.compactModel, ['haiku', 'sonnet', 'opus'] as const, 'haiku'),
     compactAt: {
@@ -1127,6 +1131,10 @@ export const register: Register = (on, options) => {
   const starting = new Set<Tier>()
   // Set while the mod's own auto-compact runs, so its session.compact hook answers it.
   let autoCompactRequested = false
+  // The planned tier and effort, written to the prompt row: the transcript holds a prompt's
+  // words from this moment on, so this is the only place a tag can reach the user's message.
+  const withTag = (body: string, shot: Route | null) =>
+    cfg.promptTag && shot !== null ? `${body}\n\n*router: ${NAME[shot.tier]}·${effortLabel(shot.effort)}*` : body
 
   on('session.start', async ($, e, next) => {
     // Not awaited: startup never waits on a process.
@@ -1166,7 +1174,7 @@ export const register: Register = (on, options) => {
           </Text>
         ))}
         <Text dimColor>
-          {l.compressions === 0 ? 'no compression yet' : `≈${size((l.rawChars - l.keptChars) / 4)} tokens kept out`} · {cfg.mode} · {s}
+          {l.compressions === 0 ? 'no compression yet' : `≈${size(l.tokensSaved)} tokens kept out`} · {cfg.mode} · {s}
         </Text>
       </Box>
     )
@@ -1239,7 +1247,8 @@ export const register: Register = (on, options) => {
       const asked = e.command === undefined && e.turnId === undefined && forcedTier === null
         ? await ultracode($, text, heuristic(text, cfg.enableFable, { failedTools: await read($, strikes) }), cfg)
         : text
-      return next(hint === undefined ? { ...e, text: asked } : { ...e, text: asked, context: [...(e.context ?? []), hint] })
+      const ask = e.command === undefined ? withTag(asked, await read($, route)) : asked
+      return next(hint === undefined ? { ...e, text: ask } : { ...e, text: ask, context: [...(e.context ?? []), hint] })
     }
     // Typed during a running turn: it runs on that turn's model, or waits for a turn of its own, routed then.
     if (e.turnId !== undefined) {
@@ -1270,7 +1279,8 @@ export const register: Register = (on, options) => {
     }
     const verdict = await enter($, text, forcedTier, cfg, forcedWhy, parsedPrefix.nudge)
     const asked = await ultracode($, text, verdict, cfg)
-    return next(parsedPrefix.raw === '' && asked === text ? e : { ...e, text: asked })
+    const ask = withTag(asked, await read($, route))
+    return next(ask === e.text ? e : { ...e, text: ask })
   }).catch(($, e, next) => next(e)) // routing is best effort: never hold a prompt back
 
   on('turn.start', async ($, e, next) => {
@@ -1435,11 +1445,17 @@ export const register: Register = (on, options) => {
           : l.actualUsd >= cap * 0.8
             ? `budget ${Math.min(999, Math.round((l.actualUsd / cap) * 100))}% used`
             : ''
+      const savedTail = [
+        l.routedSteps > 0 ? `saved ≈${dollars(saved(l))}` : '',
+        l.tokensSaved > 0 ? `≈${size(l.tokensSaved)} tok saved` : '',
+      ].filter(Boolean).join(' · ')
+      const budgetTail = budgetNote === '' || (text?.includes('budget') ?? false) ? '' : budgetNote
+      const tails = [budgetTail, savedTail].filter(Boolean).join(' · ')
       const shown = text === null
-        ? (budgetNote === '' ? null : `model-router: ${budgetNote}`)
-        : budgetNote === '' || text.includes('budget')
+        ? (tails === '' ? null : `model-router: ${tails}`)
+        : tails === '' || text.includes('budget')
           ? text
-          : `${text} · ${budgetNote}`
+          : `${text} · ${tails}`
       if (cfg.showNote && shown !== null) {
         return { ...done, text: shown }
       }
@@ -1601,9 +1617,12 @@ export const register: Register = (on, options) => {
         // Never fall through to core here: that would summarize on the expensive model.
         return { skip: result.skip }
       }
+      const before = await read($, context)
       const keep = await read($, prefix)
       await update($, context, () => keep)
       await shrinkCaches($, keep)
+      const summaryTokens = estimateTokens(result.messages ?? [])
+      await bill($, { tokensSaved: Math.max(0, before - summaryTokens) })
       return result
     }
     const done = await next(e)

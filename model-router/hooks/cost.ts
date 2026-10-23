@@ -172,6 +172,7 @@ export function emptyLedger(): Ledger {
     compressions: 0,
     rawChars: 0,
     keptChars: 0,
+    tokensSaved: 0,
   }
 }
 

@@ -2,6 +2,9 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { AgentInfo, On, TurnUsage } from 'claude-code'
 
+// The prompt row carries the mod's tag after the typed words; tests of the prompt's own words drop it.
+const bare = (text: string | undefined) => (text ?? '').replace(/\n\n\*router: [^*]+\*$/, '')
+
 const CREW = { options: { mode: 'crew' } }
 const COMPOSE = { model: 'claude-sonnet-5-5', promptModel: 'claude-sonnet-5-5', surfaces: [], tools: ['Agent', 'SendMessage', 'Bash'], outputStyle: null, traits: [] }
 
@@ -109,7 +112,7 @@ test('!haiku delegates instead of switching, and the prefix is stripped', CREW, 
   const entered = await submit($, '!haiku list every TODO in src')
   await step($)
 
-  expect(entered.text).toBe('list every TODO in src')
+  expect(bare(entered.text)).toBe('list every TODO in src')
   expect(entered.context?.at(-1)).toContain('The user chose haiku for this task: hand all of it to worker-haiku')
   expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5'])
 })
@@ -120,7 +123,7 @@ test('!+ on a fresh crew session lifts the orchestrator, not the session /model'
 
   const entered = await submit($, '!+ refactor the auth module')
 
-  expect(entered.text).toBe('refactor the auth module')
+  expect(bare(entered.text)).toBe('refactor the auth module')
   expect(entered.context?.at(-1)).toContain('hand all of it to worker-opus')
 })
 
@@ -181,7 +184,7 @@ test('!sonnet on a Sonnet orchestrator adds no hand-off; !fable goes to the stro
   await start($)
 
   const same = await submit($, '!sonnet add a test for parse()')
-  expect(same.text).toBe('add a test for parse()')
+  expect(bare(same.text)).toBe('add a test for parse()')
   expect(same.context ?? []).toEqual([])
 
   const fable = await submit($, '!fable prove that this lock is linearizable')
