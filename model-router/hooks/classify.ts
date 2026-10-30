@@ -115,6 +115,15 @@ const RULES: Rule[] = [
   ['sonnet', 1.5, re(String.raw`${S}(refactor${L}|refaktor${L}|przepisz|rewrite|clean ?up|uprość|simplif${L})${E}`), 'refactor'],
   ['sonnet', 1.5, re(String.raw`${S}(explain|wyjaśnij|wytłumacz|objaśnij|how does|jak działa)${E}`), 'explanation'],
   ['sonnet', 1, re(String.raw`${S}(fix|napraw|popraw)${E}`), 'fix'],
+  // A fix with a named target (an error, a failing test, a file) is bounded work, however short: "napraw ten błąd w x.ts".
+  [
+    'sonnet',
+    1.5,
+    re(
+      String.raw`${S}(fix|napraw|popraw)${E}[^.!?\n]{0,60}(${S}(bugs?|errors?|błęd${L}|błąd|bled${L}|blad|tests?|test${L}|failing|crash${L}|exceptions?|wyjąt${L})${E}|[\w./\-]+\.(?:tsx?|jsx?|py|go|rs|java|rb|php|cs|kt|swift|cpp|c|h)${E})`,
+    ),
+    'targeted fix',
+  ],
   ['sonnet', 1.5, re(String.raw`${S}(debug|zdebuguj)${E}`), 'debug'],
   ['sonnet', 1, re(String.raw`${S}(unit tests?|testy jednostkowe|regex|sql|bash script|skrypt bash)${E}`), 'routine code'],
   // "Translate" said of code is a port between languages, not a translation of text.
@@ -249,7 +258,7 @@ const RULES: Rule[] = [
     'opus',
     2.5,
     re(
-      String.raw`${S}(why|dlaczego|czemu)${E}.{0,80}${S}(fail${L}|crash${L}|slow${L}|hang${L}|break${L}|leak${L}|deadlock${L}|wrong|nie działa|nie dziala|wywala${L}|wolno|zawiesza${L}|pada|błąd${L}|blad${L})${E}`,
+      String.raw`${S}(why|dlaczego|czemu)${E}.{0,80}${S}(fail${L}|crash${L}|slow${L}|hang${L}|break${L}|leak${L}|deadlock${L}|wrong|nie działa|nie dziala|wywala${L}|wolno|zawiesza${L}|pada|błąd${L}|blad${L}|zł[yaeo]|zl[yaeo]|źle|zle|nie widzę|nie widze|nie widać|nie widac|nie pokazuje|nie wyświetla|nie wyswietla|nie zapisuje|nie ładuje|nie laduje|not showing|doesn'?t show)${E}`,
     ),
     'unexplained failure',
   ],
@@ -265,7 +274,24 @@ const RULES: Rule[] = [
   ['opus', 2.5, re(String.raw`${S}(flaky|intermittent${L}|sporadyczn${L}|race condition|deadlock${L}|memory leak|wyciek${L} pamięci|heisenbug|regression|regresj${L})${E}`), 'hard bug'],
   ['opus', 2.5, re(String.raw`${S}(architect${L}|architektur${L}|system design|zaprojektuj|trade-?offs?|kompromis${L}|scal(e|es|ing|ability)|skalow${L})${E}`), 'architecture'],
   ['opus', 1.5, re(String.raw`${S}(which|what) (of these|approach|design|option|architecture|pattern)${E}|${S}(które|który|która) (z tych|podejście|rozwiązanie)${E}`), 'choosing a design'],
-  ['opus', 2, re(String.raw`${S}(security|bezpieczeństw${L}|audit${L}|audyt${L}|vulnerab${L}|podatno${L}|threat model|pentest${L})${E}`), 'security'],
+  ['opus', 2, re(String.raw`${S}(security|bezpieczeństw${L}|bezpieczenstw${L}|vulnerab${L}|podatno${L}|threat model|pentest${L})${E}`), 'security'],
+  // An audit is a security task only when it says so or names code: "zrób audyt kosztów" is a cost review.
+  [
+    'opus',
+    2,
+    re(
+      String.raw`${S}(audit${L}|audyt${L})${E}[^.!?\n]{0,40}${S}(code|kod${L}|repo${L}|auth${L}|session${L}|sesj${L}|uprawnie${L}|permission${L}|access|dostęp${L}|dostep${L}|login${L}|logowani${L}|api|endpoint${L}|dependenc${L}|zależnoś${L}|zaleznos${L})${E}|${S}(code|kod${L}|repo${L}|auth${L}|uprawnie${L}|permission${L}|dependenc${L}|zależnoś${L})${E}[^.!?\n]{0,40}${S}(audit${L}|audyt${L})${E}`,
+    ),
+    'security',
+  ],
+  [
+    'sonnet',
+    2,
+    re(
+      String.raw`${S}(audit${L}|audyt${L}|review|przegląd${L}|przeglad${L}|analiz${L}|przeanalizuj|analyze|sprawdź|sprawdz)${E}[^.!?\n]{0,30}${S}(koszt${L}|costs?|spend${L}|wydatk${L}|budżet${L}|budzet${L}|budget${L}|token${L}|cen${L}|pricing)${E}`,
+    ),
+    'cost review',
+  ],
   ['opus', 2, re(String.raw`${S}(performance|wydajno${L}|optimi[sz]${L}|zoptymalizuj|bottleneck${L}|wąskie gardło)${E}`), 'performance'],
   [
     'opus',
@@ -274,6 +300,15 @@ const RULES: Rule[] = [
       String.raw`${S}(migrat${L}|migracj${L}|zmigruj)${E}.{0,60}${S}(plan|strateg${L}|without downtime|bez przestoju)${E}|${S}(plan|zaplanuj)${E}.{0,40}${S}(migrat${L}|migracj${L}|rollout|wdrożeni${L})${E}`,
     ),
     'migration plan',
+  ],
+  // Planning the next stage of work is open-ended: "zaplanuj kolejne kroki", "plan the next steps".
+  [
+    'opus',
+    2.5,
+    re(
+      String.raw`${S}(zaplanuj|rozplanuj)${E}|${S}(plan|zaplanuj|zaproponuj|propose|wypisz|list|ustal)${E}[^.!?\n]{0,20}${S}(next steps|kolejne kroki|następne kroki|nastepne kroki|kolejne etapy|następne etapy|nastepne etapy|roadmap${L}|plan rozwoju)${E}|${S}(roadmap${L}|plan rozwoju)${E}`,
+    ),
+    'planning',
   ],
   [
     'opus',
