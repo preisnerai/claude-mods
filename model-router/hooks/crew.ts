@@ -74,3 +74,13 @@ export function delegationHint(tier: Tier, isForced: boolean, live: string | und
     ? `[model-router] The user chose ${tier} for this task: hand all of it to ${name} (${how}), then relay its report in a few lines.`
     : `[model-router] ${tier}-level task: if it takes three or more tool calls, hand it to ${name} (${how}); otherwise do it yourself.`
 }
+
+/**
+ * A short follow-up ("tak rób", "Tak, etap 5") to the task last handed to a worker: it goes on with that worker,
+ * whose context already holds the task, rather than being started over by the orchestrator.
+ */
+export function followUpHint(tier: Tier, live: string | undefined): string {
+  const name = workerName(tier)
+  const how = live !== undefined ? `SendMessage to "${live}"` : `Agent tool, subagent_type "${workerType(tier)}", name "${name}"`
+  return `[model-router] Follow-up to the ${tier}-level task handed to ${name}: if ${name} did that work, send this on to it (${how}); otherwise do it yourself.`
+}

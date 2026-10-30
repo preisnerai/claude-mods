@@ -453,7 +453,7 @@ test('/router reports savings against the model each step would have run on', { 
 
   const report = await router($, '')
   expect(report.text).toContain('Haiku 1')
-  expect(report.text).toMatch(/saved vs claude-opus-5-5 \| ≈\$0\.\d{3}: \$0\.000\d spent instead of \$0\.\d{3}, 1 requests routed/)
+  expect(report.text).toMatch(/cost vs claude-opus-5-5 \| saved ≈\$0\.\d{3}: \$0\.000\d spent instead of \$0\.\d{3}, 1 requests routed/)
 })
 
 test('escalate: suggest holds even on the first prompt, when nothing is cached yet', { options: { mode: 'route', escalate: 'suggest' } }, async ($, on) => {
@@ -580,7 +580,7 @@ test("savings count a switch's own cache write: measured against the session mod
   const actual = (51_000 * 0.2 + 1_000 * 0.5) / 1e6
   const baseline = (50_000 * 0.2 + 1_000 * 8 + 1_000 * 20) / 1e6
   const report = await router($, '')
-  expect(report.text).toContain(`saved vs claude-opus-5-5 | ≈$${(baseline - actual).toFixed(3)}`)
+  expect(report.text).toContain(`cost vs claude-opus-5-5 | saved ≈$${(baseline - actual).toFixed(3)}`)
 })
 
 test('two results stored at once get two tee files, and a result saving under 10% with its note goes as it came', { options: { mode: 'route' } }, async ($, on) => {
@@ -1183,14 +1183,56 @@ test('/router-compact shows status and toggles the session switch', { options: {
   expect((await command($, 'router-compact', 'on')).text).toContain('auto-compact on')
 })
 
-test('the prompt row ends with the planned model and effort', { options: { mode: 'route' } }, async ($, on) => {
+// Stands for the engine's own drawing of a component beneath the plugins: its text, plain.
+function engineDraws(on: On) {
+  on('ui.render', ($, e) => ({ type: 'Text', children: [String((e.props as { text?: unknown; modes?: unknown[] }).text ?? ((e.props as { modes?: unknown[] }).modes ?? []).join(' & '))] }) as never)
+}
+
+function row($: Engine, text: string, surface: 'terminal' | 'desktop') {
+  return $.ui.mount({ plugin: 'model-router', component: 'UserMessage', props: { text, origin: { kind: 'composer' }, isExpanded: true } as never, surface })
+}
+
+test('the prompt goes out as typed; its row draws the planned model and effort, then what ran', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
+  engineDraws(on)
   await start($)
 
+  const prompt = 'Translate this error message into German: "File not found"'
+  await submit($, prompt)
+  // The model never reads the tag: the stored prompt is the person's words alone.
+  expect(w.rowTexts.at(-1)).toBe(prompt)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await row($, prompt, surface)
+    expect((await ui.find({ type: 'Text', text: /^router: Haiku·low$/ })) !== undefined).toBe(true)
+    await ui.unmount()
+  }
+
+  // Its turn ends: the tag says what the last request really went out with, against the session's Opus.
+  await step($)
+  await $.turn.complete({ turnId: 't', answer: 'Datei nicht gefunden', durationMs: 1, isAborted: false, reason: 'answer' } as never)
+  const ran = await row($, prompt, 'desktop')
+  expect((await ran.find({ type: 'Text', text: /^router: Haiku·low \(overrides your Opus\)$/ })) !== undefined).toBe(true)
+  await ran.unmount()
+
+  const other = await row($, 'a prompt the router never saw', 'desktop')
+  expect(await other.find({ type: 'Text', text: /^router:/ })).toBeUndefined()
+  expect((await other.find({ type: 'Text', text: 'a prompt the router never saw' })) !== undefined).toBe(true)
+  await other.unmount()
+
+  // Beside the footer's own modes: what the last prompt ran on.
+  const modes = await $.ui.mount({ plugin: 'model-router', component: 'SessionMode', props: { modes: ['focus'] } as never, surface: 'desktop' })
+  expect((await modes.find({ type: 'Text', text: 'focus & router: Haiku·low (overrides your Opus)' })) !== undefined).toBe(true)
+  await modes.unmount()
+})
+
+test('promptTag off draws no tag under the prompt', { options: { mode: 'route', promptTag: false } }, async ($, on) => {
+  world(on)
+  engineDraws(on)
+  await start($)
   await submit($, 'Why does this deadlock only under load?')
-  const row = w.rowTexts.at(-1) ?? ''
-  expect(row).toContain('*router: Opus·')
-  expect(row.endsWith('*')).toBe(true)
+  const ui = await row($, 'Why does this deadlock only under load?', 'desktop')
+  expect(await ui.find({ type: 'Text', text: /^router:/ })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('the prompt tag never touches a command or a prompt typed with routing off', { options: { mode: 'route' } }, async ($, on) => {

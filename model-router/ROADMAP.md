@@ -37,6 +37,10 @@ Diagnoza z `hooks/classify.ts`: reguły to pojedyncze słowa kluczowe nastawione
 - **Auto-sprzątanie workerów**: zimny lub rozdęty worker jest podmieniany na świeżego bez pytania. Cel: zimne wywołanie zawsze trafia do świeżego workera.
 - **Auto-budżet z domyślnym limitem**: ostrzeżenie przy 80%, po przekroczeniu automatyczne przejście na tańszy tier. Cel: koszt sesji ≤ limit +5%.
 
+**Status w 1.10.0:** crew mówi prawdę o modelu: log ma `from` = Twój `/model` oraz `sent`/`actual` (zdarzenie `turn`), notka pod każdą odpowiedzią w crew zawsze podaje model·effort tego zapytania, a gdy orkiestrator nadpisuje `/model` — `(overrides your Haiku)`; opcja `orchestrator: session`. Oszczędności: ujemne jako `extra ≈$X vs your <model>`, `routedSteps` liczone po modelu, który odpowiedział, `/router` rozdziela sesję główną i workery. Dalej: tag modelu w wierszu promptu tylko do wyświetlania (`UserMessage`/`SessionMode`), dziedziczenie poziomu dla „tak rób” w crew, sędzia i korpus PL w crew, sprawdzanie, czy orkiestrator faktycznie delegował.
+
+**Status w 1.11.0:** tag modelu·effortu rysowany pod każdym promptem (`ui.render` `UserMessage`) i przy trybach stopki (`SessionMode`), już nie dopisywany do wysyłanego promptu; notka pod odpowiedzią zostaje jako zapas. Crew: „tak rób” / „Tak, etap 5” idą do workera ostatniego zadania; `crewJudge` (domyślnie off) pyta sędziego, gdy reguły milczą; log `handoff` mówi, czy orkiestrator posłuchał podpowiedzi. Reguły PL: `napraw … błąd/test/plik`, „dlaczego … zły/nie widzę/nie pokazuje”, audyt tylko z kontekstem bezpieczeństwa/kodu (audyt kosztów → Sonnet), „zaplanuj kolejne kroki” → Opus; prompty z prawdziwego logu w korpusie. Do sprawdzenia na żywo w Desktop: wygląd tagu pod promptem i etykiety w stopce.
+
 ### Etap 3 — mod się uczy
 - **Uczenie się z korekt** (`!opus`, `/model` po decyzji routera): następne podobne prompty trafiają lepiej. Cel: −30% ręcznych korekt po 50 promptach.
 - **Auto-wykrywanie projektu**: tryb `crew`/`route` dobierany po typie repo i historii, bez pliku konfiguracyjnego.

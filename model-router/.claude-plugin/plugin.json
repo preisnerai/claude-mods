@@ -1,6 +1,6 @@
 {
   "name": "model-router",
-  "version": "1.9.1",
+  "version": "1.11.0",
   "description": "Cache-aware model and effort routing for Claude Code Desktop: each prompt goes to Haiku, Sonnet or Opus by what it needs, and a cheaper model or effort only when that pays after the prompt-cache re-write. Rules read non-code work too, research is Sonnet at most, !+ and !- nudge the tier, /router-help lists every command, /router why explains the decision, /router-cache shows the cache hit rate and /router-budget caps the spend. Long sessions auto-compact with Haiku at tier thresholds, every prompt you send carries a small model·effort tag, and savings show in dollars and tokens. The hardest tasks can run as Ultracode. Crew mode adds warm per-model workers. Bash output is compressed rtk-style and answers drop the filler.",
   "author": {
     "name": "preisnerai"
@@ -34,11 +34,12 @@
     "orchestrator": {
       "type": "string",
       "title": "Crew orchestrator",
-      "description": "The model the main session stays on in crew mode.",
+      "description": "The model the main session stays on in crew mode. A tier other than your /model overrides it for every main-loop request (the note, pane and /router say so); session follows your /model.",
       "options": [
         "haiku",
         "sonnet",
-        "opus"
+        "opus",
+        "session"
       ],
       "default": "sonnet"
     },
@@ -110,8 +111,14 @@
     "promptTag": {
       "type": "boolean",
       "title": "Model tag under your prompt",
-      "description": "Adds a small line like 'router: Opus·medium' to your sent message, so the chosen model and effort sit under what you asked. The turn may still hold or switch for cache reasons; /router why names the final call.",
+      "description": "Draws a small line like 'router: Sonnet·medium · crew' under each prompt you send, and the same label beside the prompt footer's modes: planned when sent, corrected to the model and effort the turn really ran on. Drawn only: the model never reads it.",
       "default": true
+    },
+    "crewJudge": {
+      "type": "boolean",
+      "title": "Crew: ask the judge when the rules cannot tell",
+      "description": "In crew mode a prompt the local rules cannot call goes to laya-serve or the Haiku judge (one cheap call) instead of staying with the orchestrator as 'no clear tier'.",
+      "default": false
     },
     "layaUrl": {
       "type": "string",

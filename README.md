@@ -98,6 +98,8 @@ Each worker keeps its context between tasks: after its first task the orchestrat
 - The local rules still read every prompt. One that needs a **stronger** model than the orchestrator reaches it with a one-line hint to hand it over if it takes three or more tool calls. `!haiku …` / `!opus …` delegate the whole prompt; `!fable …` goes to `worker-opus`, as there is no Fable worker.
 - If the model starts a second worker of the same model, the mod refuses and names the one to message, unless the old worker's context has grown or gone cold enough that a fresh one is cheaper. A spawn under another name (`worker-opus-2`) always gets past a worker that stopped answering.
 - `/router off` turns crew off for the session: no crew section, no spawn checks.
+- **When your `/model` is another tier**, every main-loop request goes out on the orchestrator anyway, and the app's own model label still shows your `/model`. The note beneath each answer, the pane and `/router` say so: `Sonnet·medium (overrides your Haiku) · crew · …`, named from the request that really went out. `orchestrator: session` keeps the main loop on your `/model` instead. A crew that costs more than your `/model` would have shows `extra ≈$X vs your Haiku`, never a negative saving, and `/router` splits the main loop from the workers.
+- **Follow-ups and hand-offs**: a short reply (`tak rób`, `Tak, etap 5`, `ok`) goes on with the worker the last task was handed to, by `SendMessage`, instead of being redone by the orchestrator. `/router log` records whether the orchestrator took each hand-off hint (`handoff` with `followed` true or false, `via` spawn or SendMessage). `crewJudge: true` sends what the rules cannot call to the judge.
 - `/router` counts each worker request against the same request on your own `/model`.
 
 Tested live: two tasks for `worker-haiku` in one session started one worker, reused it through `SendMessage`, and cost $0.0023 in Haiku tokens.
@@ -161,7 +163,7 @@ The `/router <sub>` forms (`/router why`, `/router log`, `/router off`, `/router
 | `compactKeep` | `4` | recent messages kept word for word |
 | `compactInstructions` | empty | what the summary should keep or stress |
 
-The status line shows each decision (`router: Sonnet·medium (rule .86) · saved ≈$0.41`), and a note beneath each answer names the model and why, for surfaces with no status line. The same note carries the session savings, and token savings where they are real: compressed tool output and the transcript a compaction summarized away (`≈120k tok saved`), since routing saves dollars per token, not tokens themselves. With `promptTag` on, the message you send also ends with a small `*router: Opus·medium*` line naming the planned model and effort; `/router why` gives the final call when the cache math held or switched.
+The status line shows each decision (`router: Sonnet·medium (rule .86) · saved ≈$0.41`), and a note beneath each answer names the model and why, for surfaces with no status line. The same note carries the session savings, and token savings where they are real: compressed tool output and the transcript a compaction summarized away (`≈120k tok saved`), since routing saves dollars per token, not tokens themselves. With `promptTag` on, each prompt's row draws a small `router: Sonnet·medium · crew` line under your words (planned when sent, corrected to the model and effort the turn really ran on), and the same label sits beside the prompt footer's modes. It is drawn only: the message the model reads is your words alone. `/router why` gives the full reasoning.
 
 `/router why` is the answer to "why is it still on Opus?" or "why did the effort not drop?": it separates a misread task from the cache math. Every decision is also mirrored to `~/.claude/model-router/decisions.json` (the last 500, prompts truncated to 280 characters), so a bad route or a bad effort can be copied into `tests/classify.test.ts` as a labelled case.
 
@@ -172,7 +174,7 @@ Shown when you install, and later under `/config`:
 | Setting | Default | |
 |---|---|---|
 | `mode` | `crew` | `route`: one session that switches models when the cache math pays, no workers |
-| `orchestrator` | `sonnet` | the main session's model in crew mode |
+| `orchestrator` | `sonnet` | the main session's model in crew mode; another tier than your `/model` overrides it (and says so), `session` follows your `/model` |
 | `escalate` | `auto` | `suggest`: only name a harder tier in the status line |
 | `style` | `terse` | `adhd`, `off` |
 | `compress` | `true` | Bash output compression |
@@ -190,7 +192,8 @@ Shown when you install, and later under `/config`:
 | `ultracode` | `suggest` | `auto`: add `ultracode` to the hardest prompts; `off` |
 | `adapt` | `on` | learn routing shifts from `!tier`, `!+`, `!-`, `/model` and `/effort` corrections; `off` |
 | `showNote` | `true` | the line beneath each answer |
-| `promptTag` | `true` | the `router: model·effort` tag at the end of your sent message |
+| `promptTag` | `true` | the `router: model·effort` tag drawn under each prompt and beside the footer's modes (never sent) |
+| `crewJudge` | `false` | crew: a prompt the rules cannot call goes to laya-serve or the Haiku judge instead of staying with the orchestrator |
 
 Model ids per tier are at the top of [`model-router/hooks/register.ts`](model-router/hooks/register.ts). On Bedrock or Vertex, put your provider's ids there.
 
