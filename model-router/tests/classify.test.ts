@@ -49,6 +49,17 @@ const CRITICAL: [string, string | undefined][] = [
 
   ['Help me with my thing.', undefined],
   ['Can you take a look?', undefined],
+
+  // From a real Polish session log: short confirmations are follow-ups (no tier of their own); a fix with a target,
+  // a "why is it wrong", an audit of costs and a plan each read as what they are.
+  ['tak rób', undefined],
+  ['Tak, etap 5', undefined],
+  ['implementuj etap 2', undefined],
+  ['napraw ten błąd w register.tsx', 'sonnet'],
+  ['fix the failing test in cost.test.ts', 'sonnet'],
+  ['dlaczego panel pokazuje zły model?', 'opus'],
+  ['zrób audyt kosztów', 'sonnet'],
+  ['zaplanuj kolejne kroki', 'opus'],
 ]
 
 test('local rules route clear prompts in English and Polish, and leave vague ones to the judge', async () => {
@@ -148,6 +159,16 @@ const CORPUS: [string, string][] = [
   ['Przetłumacz cały dokument umowy', 'sonnet'],
   ['Streść cały raport', 'sonnet'],
   ['Quick review of this PR', 'sonnet'],
+
+  // A real Polish session.
+  ['napraw ten błąd w register.tsx', 'sonnet'],
+  ['fix the failing test in cost.test.ts', 'sonnet'],
+  ['dlaczego panel pokazuje zły model?', 'opus'],
+  ['sprawdź czemu nie widzę stopki', 'opus'],
+  ['zrób audyt kosztów', 'sonnet'],
+  ['zaplanuj kolejne kroki', 'opus'],
+  ['zaplanuj kolejne kroki rozwoju moda', 'opus'],
+  ['zrób audyt bezpieczeństwa logowania', 'opus'],
 ]
 
 test('the labelled corpus matches the route at least 85% of the time', async () => {
@@ -206,7 +227,7 @@ test('a rule verdict is confident and says why', async () => {
 })
 
 test('short replies are follow-ups', async () => {
-  for (const text of ['ok', 'tak', 'dalej', 'do it', 'ok, zrób to teraz', 'go ahead and push it']) {
+  for (const text of ['ok', 'tak', 'dalej', 'do it', 'ok, zrób to teraz', 'go ahead and push it', 'tak rób', 'Tak, etap 5', 'implementuj etap 2']) {
     expect({ text, follow: isFollowUp(text) }).toEqual({ text, follow: true })
   }
   expect(isFollowUp('Now add pagination to the users endpoint and tests for it')).toBe(false)

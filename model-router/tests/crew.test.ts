@@ -8,7 +8,7 @@ const bare = (text: string | undefined) => (text ?? '').replace(/\n\n\*router: [
 const CREW = { options: { mode: 'crew' } }
 const COMPOSE = { model: 'claude-sonnet-5-5', promptModel: 'claude-sonnet-5-5', surfaces: [], tools: ['Agent', 'SendMessage', 'Bash'], outputStyle: null, traits: [] }
 
-function world(on: On) {
+function world(on: On, model = 'claude-opus-5-5', judge?: string) {
   const sent: { model: string; agentId?: string }[] = []
   const registered: { name: string; model?: string }[] = []
   const spawned: { subagentType: string; model?: string }[] = []
@@ -17,13 +17,17 @@ function world(on: On) {
 
   mock.store(on)
   mock.clock(on, { now: 1_000_000 })
-  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.model', () => ({ value: model }))
   on('session.messages', () => ({ value: [] }))
   on('command.register', () => ({ value: { command: 'router' } }))
   on('command.list', () => ({ value: [] }))
   on('model.complete', () => {
-    throw new Error('crew mode routes with the local rules only')
+    if (judge === undefined) {
+      throw new Error('crew mode routes with the local rules only')
+    }
+    return { value: { isAnswered: true, text: judge, usage: { input_tokens: 300, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }
   })
+  on('session.send', () => ({ isDelivered: true }))
   on('ui.status', () => ({ value: undefined }))
   on('agent.register', ($, e) => {
     registered.push({ name: e.name, model: e.model })
@@ -36,6 +40,8 @@ function world(on: On) {
   })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.step', async function* ($, e) {
     sent.push({ model: e.model, ...(e.agentId ? { agentId: e.agentId } : {}) })
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: usage === null ? null : { ...usage, model: e.model } }
@@ -247,4 +253,180 @@ test('a teammate gets the terse rules even when the person chose the ADHD shape'
 
   expect((await $.prompt.compose(COMPOSE)).sections.find(s => s.id === 'model-router:style')?.text).toContain('ADHD-friendly')
   expect((await $.prompt.compose({ ...COMPOSE, traits: ['teammate'] })).sections.find(s => s.id === 'model-router:style')?.text).toContain('Output economy')
+})
+
+const ROUTER = { origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } } as const
+
+async function complete($: Engine) {
+  return $.turn.complete({ turnId: 't', answer: 'done', durationMs: 1, isAborted: false, reason: 'answer' } as never)
+}
+
+async function decisions($: Engine): Promise<Record<string, unknown>[]> {
+  const shown = await $.command.run({ command: 'router', args: 'log', ...ROUTER })
+  return shown.text.split(/\r?\n/).filter(line => line.startsWith('{')).map(line => JSON.parse(line) as Record<string, unknown>)
+}
+
+test('on a Haiku session the crew note, pane and log say Sonnet overrides it', CREW, async ($, on) => {
+  const w = world(on, 'claude-haiku-5-5')
+  await start($)
+
+  await submit($, 'tak rób')
+  w.setUsage({ input_tokens: 100, output_tokens: 500, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 0, model: '' })
+  await step($, undefined, 'claude-haiku-5-5')
+  const done = await complete($)
+
+  expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5'])
+  expect(done.text).toContain('model-router: Sonnet·medium (overrides your Haiku) · crew · follow-up')
+
+  const log = await decisions($)
+  const route = log.find(e => e.event === 'route')
+  expect(route?.from).toBe('haiku')
+  expect(route?.session).toBe('claude-haiku-5-5')
+  expect(route?.sent).toBe('claude-sonnet-5-5')
+  const turn = log.find(e => e.event === 'turn')
+  expect(turn).toMatchObject({ session: 'claude-haiku-5-5', sent: 'claude-sonnet-5-5', actual: 'claude-sonnet-5-5', from: 'haiku' })
+
+  const ui = await $.ui.mount({ plugin: 'model-router', component: 'Pane', requestId: 'model-router', props: { title: 'Model router' } as never, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /^Sonnet·medium \(overrides your Haiku\) · crew$/ })) !== undefined).toBe(true)
+  await ui.unmount()
+})
+
+test('a crew that costs more than the session model says extra, never a negative saving', CREW, async ($, on) => {
+  const w = world(on, 'claude-haiku-5-5')
+  await start($)
+
+  await submit($, 'Add a dark mode toggle to the settings page')
+  w.setUsage({ input_tokens: 100, output_tokens: 2_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 30_000, model: '' })
+  await step($, undefined, 'claude-haiku-5-5')
+  const done = await complete($)
+
+  expect(done.text).toMatch(/extra ≈\$0\.\d+ vs your Haiku/)
+  expect(done.text).not.toContain('saved ≈-')
+  const report = await $.command.run({ command: 'router', args: '', ...ROUTER })
+  expect(report.text).toContain('Sonnet·medium (overrides your Haiku) · crew')
+  expect(report.text).toMatch(/\| main loop \| extra ≈\$0\.\d+ vs your Haiku: .*1 requests on another model/)
+  expect(report.text).toContain('| workers | — |')
+  expect(report.text).not.toContain('≈$-')
+})
+
+test('orchestrator: session follows the session model and sends its requests untouched', { options: { mode: 'crew', orchestrator: 'session' } }, async ($, on) => {
+  const w = world(on, 'claude-haiku-5-5')
+  await start($)
+
+  const hard = await submit($, 'Why does this deadlock only under load?')
+  expect(hard.context?.at(-1)).toContain('hand it to worker-opus')
+  await step($, undefined, 'claude-haiku-5-5')
+  const done = await complete($)
+
+  expect(w.sent.map(s => s.model)).toEqual(['claude-haiku-5-5'])
+  // The effort is the one the request went out with: the session's own, here xhigh (Extra).
+  expect(done.text).toContain('model-router: Haiku·Extra · crew → worker-opus')
+  expect(done.text).not.toContain('overrides')
+
+  await submit($, 'Add a dark mode toggle to the settings page')
+  const second = await complete($)
+  expect(second.text).toContain('· crew → worker-sonnet')
+})
+
+test('the main loop and the workers are billed apart, and a worker on the session model is not routed', CREW, async ($, on) => {
+  const w = world(on, 'claude-sonnet-5-5')
+  await start($)
+  await submit($, 'Add a dark mode toggle to the settings page')
+
+  w.setUsage({ input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 50_000, cache_creation_input_tokens: 0, model: '' })
+  const { agentId } = await spawn($, 'model-router:worker-sonnet')
+  await step($, agentId, 'claude-sonnet-5-5')
+  const haiku = await spawn($, 'model-router:worker-haiku')
+  await step($, haiku.agentId, 'claude-haiku-5-5')
+
+  const report = await $.command.run({ command: 'router', args: '', ...ROUTER })
+  expect(report.text).toMatch(/\| workers \| saved ≈\$0\.\d+: \$0\.\d+ instead of \$0\.\d+, 2 requests/)
+  expect(report.text).toMatch(/1 requests routed/)
+})
+
+test('a short follow-up goes on with the worker the last task went to', CREW, async ($, on) => {
+  const w = world(on)
+  await start($)
+
+  const hard = await submit($, 'Why does this deadlock only under load?')
+  expect(hard.context?.at(-1)).toContain('hand it to worker-opus')
+  w.agents.push({ id: 'agent-3', name: 'worker-opus', description: 'task', type: 'model-router:worker-opus', status: 'idle' } as AgentInfo)
+
+  for (const text of ['tak rób', 'Tak, etap 5', 'implementuj etap 2']) {
+    const follow = await submit($, text)
+    expect({ text, hint: follow.context?.at(-1) }).toEqual({ text, hint: expect.stringContaining('Follow-up to the opus-level task handed to worker-opus') })
+    expect(follow.context?.at(-1)).toContain('SendMessage to "worker-opus"')
+  }
+  expect(bare((await submit($, 'tak rób')).text)).toBe('tak rób')
+
+  // A new task the orchestrator keeps ends the chain: the next "tak" is the orchestrator's.
+  await submit($, 'Add a dark mode toggle to the settings page')
+  const after = await submit($, 'tak')
+  expect(after.context ?? []).toEqual([])
+  const log = await decisions($)
+  expect(log.at(-1)).toMatchObject({ event: 'route', why: 'follow-up', decision: 'stays with the orchestrator' })
+})
+
+test('a follow-up with no hand-off before it stays with the orchestrator', CREW, async ($, on) => {
+  world(on)
+  await start($)
+  const follow = await submit($, 'tak rób')
+  expect(follow.context ?? []).toEqual([])
+})
+
+test('crewJudge asks the judge what the rules cannot call; off, the rules alone decide', { options: { mode: 'crew', crewJudge: true } }, async ($, on) => {
+  world(on, 'claude-opus-5-5', 'OPUS confidence 0.9')
+  await start($)
+  const vague = await submit($, 'Help me with my thing in the app.')
+  expect(vague.context?.at(-1)).toContain('hand it to worker-opus')
+  const log = await decisions($)
+  expect(log.find(e => e.event === 'delegate')).toMatchObject({ source: 'judge', worker: 'worker-opus' })
+})
+
+test('without crewJudge a vague prompt makes no judge call', CREW, async ($, on) => {
+  world(on)
+  await start($)
+  // world() throws on any model call: this passing means the judge was not asked.
+  const vague = await submit($, 'Help me with my thing in the app.')
+  expect(vague.context ?? []).toEqual([])
+})
+
+test('the log says whether the orchestrator took a hand-off: a spawn, a SendMessage, or the turn ending first', CREW, async ($, on) => {
+  world(on)
+  await start($)
+
+  await submit($, 'Why does this deadlock only under load?')
+  await spawn($, 'model-router:worker-opus')
+  await complete($)
+
+  await submit($, 'Investigate the root cause of the flaky checkout test')
+  await $.session.send({ to: 'worker-opus', text: 'next task' } as never)
+  await complete($)
+
+  await submit($, 'Why does the cache crash under load?')
+  await complete($)
+
+  const handoffs = (await decisions($)).filter(e => e.event === 'handoff')
+  expect(handoffs.map(e => [e.worker, e.followed, e.via])).toEqual([
+    ['worker-opus', true, 'spawn'],
+    ['worker-opus', true, 'SendMessage'],
+    ['worker-opus', false, 'turn ended'],
+  ])
+})
+
+test('a crew prompt row is tagged with the orchestrator it ran on and the worker its hint named', CREW, async ($, on) => {
+  const w = world(on, 'claude-haiku-5-5')
+  on('ui.render', ($, e) => ({ type: 'Text', children: [String((e.props as { text?: unknown }).text ?? '')] }) as never)
+  await start($)
+
+  const prompt = 'Why does this deadlock only under load?'
+  const sent = await submit($, prompt)
+  expect(sent.text).toBe(prompt)
+  w.setUsage({ input_tokens: 100, output_tokens: 500, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 0, model: '' })
+  await step($, undefined, 'claude-haiku-5-5')
+  await complete($)
+
+  const ui = await $.ui.mount({ plugin: 'model-router', component: 'UserMessage', props: { text: prompt, origin: { kind: 'composer' }, isExpanded: true } as never, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: 'router: Sonnet·medium (overrides your Haiku) · crew → worker-opus' })) !== undefined).toBe(true)
+  await ui.unmount()
 })

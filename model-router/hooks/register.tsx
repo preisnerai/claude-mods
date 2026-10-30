@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentStatus, EngineInterface, Register } from 'claude-code'
 
-import type { Effort, Ledger, Route, Sent, Style, Tier } from '../types'
+import type { Effort, Ledger, Route, Sent, Step, Style, Tier } from '../types'
 import { EFFORTS, ULTRACODE, categoryOf, clampEffort, effortFor, effortLabel, isHardest, learnedLine, nudge, shiftOf, shiftTier } from './adapt'
 import type { Bias } from './adapt'
 import {
@@ -20,10 +20,10 @@ import {
 } from './classify'
 import type { Verdict } from './classify'
 import { MIN_CHARS, compress, familyOf, keepsSignal, rtkFilter } from './compress'
-import { CACHE, PROFILE, addLedger, cacheHitRate, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, promptOf, requestCost, saved, size, switchDelta, turnCost, usd } from './cost'
+import { CACHE, PROFILE, addLedger, cacheHitRate, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, mainSaved, promptOf, requestCost, saved, savingsText, size, switchDelta, turnCost, usd, workerSaved } from './cost'
 import { estimateTokens, summarize } from './compact'
 import type { Cache, LedgerDelta, Profile, Target } from './cost'
-import { WORKERS, crewSection, delegationHint, tierOfWorker, workerName, workerSpec, workerType } from './crew'
+import { WORKERS, crewSection, delegationHint, followUpHint, tierOfWorker, workerName, workerSpec, workerType } from './crew'
 import { STYLE, isStyle } from './style'
 import { explainDecision, lastDecision, lastUltracodeAfter } from './why'
 
@@ -125,6 +125,7 @@ const context = atom({ plugin: 'model-router', key: 'context' } as const, 0)
 const prefix = atom({ plugin: 'model-router', key: 'prefix' } as const, 0)
 const warm = atom({ plugin: 'model-router', key: 'warm' } as const, {})
 const lastSent = atom({ plugin: 'model-router', key: 'lastSent' } as const, null)
+const lastStep = atom({ plugin: 'model-router', key: 'lastStep' } as const, null)
 const baseEffort = atom({ plugin: 'model-router', key: 'baseEffort' } as const, null)
 const shadow = atom({ plugin: 'model-router', key: 'shadow' } as const, null)
 const taskTier = atom({ plugin: 'model-router', key: 'taskTier' } as const, null)
@@ -144,6 +145,12 @@ const workers = atom({ plugin: 'model-router', key: 'workers' } as const, [])
 const workerWarm = atom({ plugin: 'model-router', key: 'workerWarm' } as const, {})
 const paneAsked = atom({ plugin: 'model-router', key: 'paneAsked' } as const, false)
 const note = atom({ plugin: 'model-router', key: 'note' } as const, null)
+const noteTail = atom({ plugin: 'model-router', key: 'noteTail' } as const, null)
+const tags = atom({ plugin: 'model-router', key: 'tags' } as const, {})
+const promptKey = atom({ plugin: 'model-router', key: 'promptKey' } as const, null)
+const lastTag = atom({ plugin: 'model-router', key: 'lastTag' } as const, null)
+const crewTask = atom({ plugin: 'model-router', key: 'crewTask' } as const, null)
+const pendingHandoff = atom({ plugin: 'model-router', key: 'pendingHandoff' } as const, null)
 const category = atom({ plugin: 'model-router', key: 'category' } as const, null)
 
 type $ = EngineInterface
@@ -168,14 +175,18 @@ const LIVE = new Set<AgentStatus>(['pending', 'running', 'waiting', 'idle', 'com
 
 type Config = {
   mode: 'route' | 'crew'
-  orchestrator: Tier
+  /** The crew's main-loop tier, or `session`: whatever the session's own /model is. */
+  orchestrator: Tier | 'session'
   cache: Cache
   effort: Record<Tier, Effort>
   effortMode: 'auto' | 'fixed' | 'task'
   workerCache: Cache
   budgetUsd: number
   budgetAction: 'warn' | 'downgrade'
+  /** Draw a model·effort tag under each prompt and beside the footer's modes; never sent to the model. */
   promptTag: boolean
+  /** Crew: a prompt the rules cannot call goes to laya-serve or the Haiku judge (one cheap call), not "no clear tier". */
+  crewJudge: boolean
   compactAuto: boolean
   compactModel: Tier
   compactAt: Record<Tier, number>
@@ -211,6 +222,95 @@ function tierOf(model: string): Tier | undefined {
 function describe(r: Route): string {
   const how = r.source === 'rule' || r.source === 'judge' || r.source === 'laya' ? `${r.source} ${r.confidence.toFixed(2).replace(/^0/, '')}` : r.source
   return `${NAME[r.tier]}·${effortLabel(r.effort)} (${how})`
+}
+
+/** The session's own /model: the one recorded when routing began, or the one it is now. */
+async function ownModel($: $): Promise<string> {
+  return (await read($, sessionModel)) ?? (await $.session.model())
+}
+
+/** The session's /model as people name it (`Haiku`), the baseline every saving is measured against. */
+async function ownName($: $): Promise<string> {
+  const model = await ownModel($)
+  const tier = tierOf(model)
+  return tier === undefined ? model : NAME[tier]
+}
+
+/** The crew's main-loop tier: the configured one, or the session's own under `orchestrator: session`. */
+async function orchestratorOf($: $, cfg: Config): Promise<Tier> {
+  return cfg.orchestrator === 'session' ? (tierOf(await ownModel($)) ?? 'sonnet') : cfg.orchestrator
+}
+
+/**
+ * What the crew's main loop really runs on, as people read it: `Sonnet·medium`, and `(overrides your Haiku)`
+ * when that is not the session's /model. turn.step sends another tier's requests on that tier's model and
+ * effort; on the session's own tier they go out with the session's effort, untouched.
+ */
+async function crewLabel($: $, cfg: Config): Promise<{ tier: Tier; text: string }> {
+  const tier = await orchestratorOf($, cfg)
+  const own = tierOf(await ownModel($))
+  const effort = own === tier ? ((await read($, baseEffort)) ?? cfg.effort[tier]) : cfg.effort[tier]
+  const over = own === undefined || own === tier ? '' : ` (overrides your ${NAME[own]})`
+  return { tier, text: `${NAME[tier]}·${effortLabel(effort)}${over}` }
+}
+
+/** A request as it really went: `Sonnet·medium`, and `(overrides your Haiku)` when the engine asked for Haiku. */
+function ranLabel(step: Step): string {
+  const ran = tierOf(step.actual)
+  const own = tierOf(step.requested)
+  const over = own === undefined || ran === undefined || own === ran ? '' : ` (overrides your ${NAME[own]})`
+  return `${ran === undefined ? step.actual : NAME[ran]}·${effortLabel(step.effort)}${over}`
+}
+
+// Tags are keyed by the prompt's words, as a UserMessage row draws them: whitespace folded, capped.
+const TAG_CAP = 200
+
+function keyOf(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 300)
+}
+
+/** Route mode: the planned model and effort of the prompt, before its turn says what really ran. */
+function routeTag(r: Route | null): string | null {
+  return r === null ? null : `${NAME[r.tier]}·${effortLabel(r.effort)}`
+}
+
+/** Crew: the orchestrator's label, and the worker a hand-off hint named (`→ worker-opus`). */
+function crewTag(tail: string | null, label: { text: string }): string {
+  const handoff = tail?.startsWith('crew →') === true ? tail.replace(/ \(no Fable worker[^)]*\)/, '') : 'crew'
+  return `${label.text} · ${handoff}`
+}
+
+/** Stores a prompt's tag (the latest last, the oldest dropped past TAG_CAP) and makes it the footer's label. */
+async function tagPrompt($: $, text: string, tag: string) {
+  const key = keyOf(text)
+  if (key === '') {
+    return
+  }
+  await update($, tags, m => {
+    const { [key]: _old, ...rest } = m
+    return Object.fromEntries([...Object.entries(rest), [key, tag]].slice(-TAG_CAP))
+  })
+  await update($, lastTag, () => tag)
+}
+
+/**
+ * The tag a prompt's row shows: planned when it is sent, corrected to what ran when its turn ends. It is drawn by
+ * ui.render (UserMessage), never written into the prompt, so the model never reads it. `midTurn`: typed while a
+ * turn runs, so that turn's end does not correct it.
+ */
+async function planTag($: $, text: string, midTurn: boolean, cfg: Config) {
+  const tag = cfg.mode === 'crew' ? crewTag(await read($, noteTail), await crewLabel($, cfg)) : routeTag(await read($, route))
+  if (tag !== null) {
+    await tagPrompt($, text, tag)
+  }
+  if (!midTurn) {
+    await update($, promptKey, () => keyOf(text))
+  }
+}
+
+/** The route as the pane and /router show it; in crew, the orchestrator as it really runs. */
+async function routeLabel($: $, r: Route, cfg: Config): Promise<string> {
+  return cfg.mode === 'crew' && r.source === 'crew' ? `${(await crewLabel($, cfg)).text} · crew` : describe(r)
 }
 
 // Every read-modify-write of the store, one after another: two hooks running at once (the main loop and a
@@ -296,7 +396,7 @@ async function status($: $, text: string) {
   lastStatus = text
   const l = await read($, ledger)
   const tok = l.tokensSaved > 0 ? ` · ≈${size(l.tokensSaved)} tok` : ''
-  const money = l.routedSteps > 0 ? ` · saved ≈${dollars(saved(l))}` : ''
+  const money = l.routedSteps > 0 ? ` · ${savingsText(saved(l), await ownName($))}` : ''
   $.ui.status(`router: ${text}${money}${tok}`)
 }
 
@@ -526,11 +626,15 @@ async function apply($: $, given: Verdict, cfg: Config, prompt?: string): Promis
   return verdict
 }
 
-/** Crew mode: the main loop stays on the orchestrator for the whole session, so its cache is never thrown away. */
+/**
+ * Crew mode: the main loop stays on the orchestrator for the whole session, so its cache is never thrown away.
+ * When the session's /model is another tier, every main-loop request is sent on the orchestrator instead
+ * (turn.step), which the app's own model label does not show: the note, pane and /router say so.
+ */
 async function pinOrchestrator($: $, cfg: Config) {
-  const t = cfg.orchestrator
   if ((await read($, route))?.source !== 'crew') {
     await recordSessionModel($)
+    const t = await orchestratorOf($, cfg)
     await update($, route, () => ({ tier: t, model: MODEL[t], effort: cfg.effort[t], source: 'crew', confidence: 1 }))
   }
 }
@@ -540,7 +644,7 @@ async function baseTier($: $, cfg: Config): Promise<Tier> {
   if (current !== null) {
     return current.tier
   }
-  return cfg.mode === 'crew' ? cfg.orchestrator : tierOf(await $.session.model()) ?? cfg.orchestrator
+  return cfg.mode === 'crew' ? orchestratorOf($, cfg) : tierOf(await $.session.model()) ?? (await orchestratorOf($, cfg))
 }
 
 async function routePrompt($: $, text: string, cfg: Config): Promise<Verdict | undefined> {
@@ -692,38 +796,89 @@ function addressOf(a: AgentInfo): string {
 /**
  * Crew mode: a prompt that needs another model reaches the orchestrator with a hint to hand it over. Forced
  * (`!opus …`): always, unless the orchestrator is that model already. Otherwise only for a harder tier than
- * the orchestrator's: below it, a hand-off and a report cost more than doing the task.
+ * the orchestrator's: below it, a hand-off and a report cost more than doing the task. A short follow-up
+ * ("tak rób") goes on with the worker the last task went to. `midTurn`: typed while a turn runs.
  */
-async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Config): Promise<string | undefined> {
+async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Config, midTurn = false): Promise<string | undefined> {
   await update($, note, () => null)
+  await update($, noteTail, () => null)
   await pinOrchestrator($, cfg)
-  const orchestrates = `crew · ${NAME[cfg.orchestrator]} orchestrates`
+  const label = await crewLabel($, cfg)
+  const orchestrator = label.tier
+  const session = await ownModel($)
+  const orchestrates = `crew · ${label.text} orchestrates`
+  const previous = await read($, crewTask)
+  const isFollow = forcedTier === null && isFollowUp(text, false)
   // There is no Fable worker: a forced !fable goes to the strongest worker there is, and says so.
-  const asked = forcedTier ?? heuristic(text, false, { failedTools: await read($, strikes) })?.tier
+  let asked: Tier | undefined
+  let source = forcedTier !== null ? 'forced' : 'rule'
+  if (forcedTier !== null) {
+    asked = forcedTier
+  } else if (isFollow) {
+    asked = previous?.tier
+    source = 'follow-up'
+  } else {
+    asked = heuristic(text, false, { failedTools: await read($, strikes) })?.tier
+    if (asked === undefined && cfg.crewJudge) {
+      // What the rules cannot call goes to laya-serve or the Haiku judge, when the person turned that on.
+      const verdict = await classify($, text, cfg)
+      asked = verdict?.tier
+      source = verdict?.source ?? source
+    }
+  }
   const tier = asked === 'fable' ? 'opus' : asked
-  const wanted = tier !== undefined && tier !== cfg.orchestrator && (forcedTier !== null || rank(tier) > rank(cfg.orchestrator))
+  const wanted = tier !== undefined && tier !== orchestrator && (forcedTier !== null || isFollow || rank(tier) > rank(orchestrator))
   if (tier === undefined || !wanted) {
+    const why = isFollow ? 'follow-up' : tier === undefined ? 'no clear tier' : `${tier} task, orchestrator handles it`
+    if (!isFollow) {
+      // A new task the orchestrator keeps: a later "tak rób" follows it, not a worker's older one.
+      await update($, crewTask, () => null)
+    }
     await log($, 'route', {
-      tier: cfg.orchestrator,
-      effort: cfg.effort[cfg.orchestrator],
-      source: 'crew',
+      tier: orchestrator,
+      effort: cfg.effort[orchestrator],
+      source: isFollow ? 'follow-up' : 'crew',
       confidence: 1,
-      why: tier === undefined ? 'no clear tier' : `${tier} task, orchestrator handles it`,
+      why,
       decision: 'stays with the orchestrator',
       taken: true,
-      from: cfg.orchestrator,
+      // The session's own /model, not the orchestrator: they differ when crew overrides it.
+      from: tierOf(session) ?? null,
+      session,
+      sent: MODEL[orchestrator],
       context: await read($, context),
       prompt: text.slice(0, 280),
     })
+    await update($, note, () => `model-router: ${label.text} · crew · ${why}`)
+    await update($, noteTail, () => `crew · ${why}`)
     await status($, orchestrates)
     return undefined
   }
   const live = await liveWorker($, tier)
+  const address = live === undefined ? undefined : addressOf(live)
+  const name = workerName(tier)
   const swap = asked === 'fable' ? ' (no Fable worker: the strongest one takes it)' : ''
-  await update($, note, () => `model-router: crew · ${workerName(tier)}${swap}`)
-  await status($, `${orchestrates} · ${tier} task → ${workerName(tier)}${swap}`)
-  await log($, 'delegate', { tier, forced: forcedTier !== null, worker: workerName(tier), prompt: text.slice(0, 280) })
-  return delegationHint(tier, forcedTier !== null, live === undefined ? undefined : addressOf(live))
+  const how = isFollow ? ' (follow-up)' : ''
+  await update($, note, () => `model-router: ${label.text} · crew → ${name}${how}${swap}`)
+  await update($, noteTail, () => `crew → ${name}${how}${swap}`)
+  await update($, crewTask, () => ({ tier, worker: name }))
+  // Whether the orchestrator took the hint is told by its next spawn or SendMessage this turn (see followThrough).
+  if (!midTurn) {
+    await update($, pendingHandoff, () => ({ tier, worker: name, address: address ?? null, prompt: text.slice(0, 120) }))
+  }
+  await status($, `${orchestrates} · ${tier} task → ${name}${how}${swap}`)
+  await log($, 'delegate', { tier, forced: forcedTier !== null, followUp: isFollow, source, worker: name, orchestrator, from: tierOf(session) ?? null, session, prompt: text.slice(0, 280) })
+  return isFollow ? followUpHint(tier, address) : delegationHint(tier, forcedTier !== null, address)
+}
+
+/** Crew: the orchestrator reached a worker after a hand-off hint (a spawn or a SendMessage), or the turn ended first. */
+async function followThrough($: $, followed: boolean, via: string, worker?: string) {
+  const pending = await read($, pendingHandoff)
+  if (pending === null) {
+    return
+  }
+  await update($, pendingHandoff, () => null)
+  await log($, 'handoff', { worker: pending.worker, tier: pending.tier, followed, via, ...(worker === undefined || worker === pending.worker ? {} : { took: worker }), prompt: pending.prompt })
 }
 
 // Agent calls the crew check refused: their errors are the mod's answer, not a struggling model.
@@ -865,9 +1020,18 @@ async function report($: $, cfg: Config): Promise<string> {
   const s = (await read($, style)) ?? cfg.style
   const learned = cfg.adapt ? learnedLine(await biasOf($), await $.clock.now()) : undefined
   const turns = (l: Ledger) => ORDER.filter(t => l.turns[t] > 0).map(t => `${NAME[t]} ${l.turns[t]}`).join(' · ') || '—'
+  const name = await ownName($)
   const money = (l: Ledger) =>
-    (l.baselineUsd === 0 ? '—' : `≈${dollars(saved(l))}: ${dollars(l.actualUsd)} spent instead of ${dollars(l.baselineUsd)}, ${l.routedSteps} requests routed, judge ${l.judgeCalls}× ${dollars(l.judgeUsd)}`)
+    (l.baselineUsd === 0 ? '—' : `${savingsText(saved(l), name)}: ${dollars(l.actualUsd)} spent instead of ${dollars(l.baselineUsd)}, ${l.routedSteps} requests routed, judge ${l.judgeCalls}× ${dollars(l.judgeUsd)}`)
     + (l.tokensSaved > 0 ? ` · ≈${size(l.tokensSaved)} tokens kept out` : '')
+  // The same money split: the main loop (crew's orchestrator, or route's switches, judging included) and the workers.
+  const main = (l: Ledger) => {
+    const actual = l.actualUsd - l.workerActualUsd
+    const baseline = l.baselineUsd - l.workerBaselineUsd
+    return baseline === 0 && actual === 0 ? '—' : `${savingsText(mainSaved(l), name)}: ${dollars(actual)} instead of ${dollars(baseline)}, ${l.routedSteps - l.workerRoutedSteps} requests on another model`
+  }
+  const crew = (l: Ledger) =>
+    l.workerSteps === 0 ? '—' : `${savingsText(workerSaved(l), name)}: ${dollars(l.workerActualUsd)} instead of ${dollars(l.workerBaselineUsd)}, ${l.workerSteps} requests`
   const kept = (l: Ledger) => (l.compressions === 0 ? '—' : `${l.compressions}× · ${size(l.rawChars)} → ${size(l.keptChars)} chars · ≈${size((l.rawChars - l.keptChars) / 4)} tokens kept out of context`)
   const cache = (l: Ledger) => {
     const rate = cacheHitRate(l)
@@ -878,12 +1042,14 @@ async function report($: $, cfg: Config): Promise<string> {
     ? `${dollars(session.actualUsd)} of ${dollars(cap)} (${Math.min(999, Math.round((session.actualUsd / cap) * 100))}%)`
     : 'off'
   return [
-    `model-router · ${cfg.mode} · ${manual ? 'off (/model was changed by hand; /router on resumes)' : r === null ? 'not routed yet' : describe(r)} · style ${s} · compression ${cfg.compress ? 'on' : 'off'}${cfg.useRtk && (await rtk) ? ' (rtk)' : ''}`,
+    `model-router · ${cfg.mode} · ${manual ? 'off (/model was changed by hand; /router on resumes)' : r === null ? 'not routed yet' : await routeLabel($, r, cfg)} · style ${s} · compression ${cfg.compress ? 'on' : 'off'}${cfg.useRtk && (await rtk) ? ' (rtk)' : ''}`,
     '',
     `| | this session | all time |`,
     `|---|---|---|`,
     `| turns | ${turns(session)} | ${turns(all)} |`,
-    `| saved vs ${base} | ${money(session)} | ${money(all)} |`,
+    `| cost vs ${base} | ${money(session)} | ${money(all)} |`,
+    // With no worker the main loop is the whole of it: the split only shows in crew, or once a worker ran.
+    ...(cfg.mode === 'crew' || all.workerSteps > 0 ? [`| main loop | ${main(session)} | ${main(all)} |`, `| workers | ${crew(session)} | ${crew(all)} |`] : []),
     `| switches / holds | ${session.switches} / ${session.holds} | ${all.switches} / ${all.holds} |`,
     `| cache | ${cache(session)} | ${cache(all)} |`,
     `| bash output | ${kept(session)} | ${kept(all)} |`,
@@ -1096,7 +1262,7 @@ export const register: Register = (on, options) => {
   const key = String(options.layaApiKey ?? '')
   const cfg: Config = {
     mode: pick(options.mode, ['route', 'crew'] as const, 'crew'),
-    orchestrator: pick(options.orchestrator, ['haiku', 'sonnet', 'opus'] as const, 'sonnet'),
+    orchestrator: pick(options.orchestrator, ['haiku', 'sonnet', 'opus', 'session'] as const, 'sonnet'),
     cache: CACHE[pick(options.cacheTtl, ['1h', '5m'] as const, '1h')],
     // Never `max` or `ultracode` as a router-sent effort: they become xhigh (Extra); Ultracode is the keyword switch.
     effort: Object.fromEntries(ORDER.map(t => [t, clampEffort(options[`${t}Effort`], EFFORT[t])])) as Record<Tier, Effort>,
@@ -1105,6 +1271,7 @@ export const register: Register = (on, options) => {
     budgetUsd: Number(options.budgetUsd ?? 0) || 0,
     budgetAction: pick(options.budgetAction, ['warn', 'downgrade'] as const, 'warn'),
     promptTag: flag(options.promptTag, true),
+    crewJudge: flag(options.crewJudge, false),
     compactAuto: flag(options.compactAuto, true),
     compactModel: pick(options.compactModel, ['haiku', 'sonnet', 'opus'] as const, 'haiku'),
     compactAt: {
@@ -1131,11 +1298,6 @@ export const register: Register = (on, options) => {
   const starting = new Set<Tier>()
   // Set while the mod's own auto-compact runs, so its session.compact hook answers it.
   let autoCompactRequested = false
-  // The planned tier and effort, written to the prompt row: the transcript holds a prompt's
-  // words from this moment on, so this is the only place a tag can reach the user's message.
-  const withTag = (body: string, shot: Route | null) =>
-    cfg.promptTag && shot !== null ? `${body}\n\n*router: ${NAME[shot.tier]}·${effortLabel(shot.effort)}*` : body
-
   on('session.start', async ($, e, next) => {
     // Not awaited: startup never waits on a process.
     rtk = cfg.compress && cfg.useRtk
@@ -1164,10 +1326,13 @@ export const register: Register = (on, options) => {
     const manual = await read($, isManual)
     const s = (await read($, style)) ?? cfg.style
     const total = ORDER.reduce((n, t) => n + l.turns[t], 0)
+    const label = r === null ? '' : await routeLabel($, r, cfg)
+    const money = saved(l)
+    const name = await ownName($)
     return (
       <Box flexDirection="column">
-        <Text bold>{manual ? 'off · /router on' : r === null ? 'not routed yet' : describe(r)}</Text>
-        <Text color="green">saved {l.baselineUsd === 0 ? '—' : `≈${dollars(saved(l))}`}</Text>
+        <Text bold>{manual ? 'off · /router on' : r === null ? 'not routed yet' : label}</Text>
+        <Text color={money < 0 ? 'yellow' : 'green'}>{l.baselineUsd === 0 ? 'saved —' : savingsText(money, name)}</Text>
         {ORDER.filter(t => l.turns[t] > 0).map(t => (
           <Text>
             {`${NAME[t].padEnd(7)}${'█'.repeat(Math.max(1, Math.round((l.turns[t] / total) * 12)))} ${l.turns[t]}`}
@@ -1179,6 +1344,49 @@ export const register: Register = (on, options) => {
       </Box>
     )
   })
+
+  // The prompt's row: the model and effort it ran on, drawn under the person's words. The stored message, and so
+  // what the model reads, stays as typed. A prompt with no tag (a command, routing off) draws as the engine draws it.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    const drawn = await next(e)
+    if (!cfg.promptTag) {
+      return drawn
+    }
+    const tag = (await read($, tags))[keyOf(e.props.text)]
+    if (tag === undefined) {
+      return drawn
+    }
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        {drawn}
+        <Text dimColor>{`router: ${tag}`}</Text>
+      </Box>
+    )
+  })
+
+  // Beside the prompt footer's mode labels: what the last prompt ran on, so the app's own model label is never
+  // the only one on screen (crew may override it).
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const tag = cfg.promptTag && !(await read($, isManual)) ? await read($, lastTag) : null
+    return next(tag === null ? e : { ...e, props: { ...e.props, modes: [...e.props.modes, `router: ${tag}`] } })
+  })
+
+  // Crew: a SendMessage from the main loop to a worker is the orchestrator taking the hand-off hint.
+  on('session.send', async ($, e, next) => {
+    try {
+      const pending = cfg.mode === 'crew' && e.agentId === undefined ? await read($, pendingHandoff) : null
+      if (pending !== null) {
+        const to = String(e.to)
+        const known = (await read($, workers)).includes(to)
+        const tier = WORKERS.find(t => to === workerName(t) || to.startsWith(`${workerName(t)}-`))
+        if (to === pending.address || known || tier !== undefined) {
+          await followThrough($, true, 'SendMessage', tier === undefined ? (to === pending.address ? pending.worker : to) : workerName(tier))
+        }
+      }
+    } catch {}
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'router' }, async ($, e) => runRouter($, e.args, cfg))
   on('command.run', { command: 'router-help' }, async ($) => runRouter($, 'help', cfg))
@@ -1242,12 +1450,15 @@ export const register: Register = (on, options) => {
       forcedTier = nudged
     }
     if (cfg.mode === 'crew') {
-      // Crew never switches models, so a prompt typed during a turn takes its hint now, like any other.
-      const hint = e.command === undefined ? await delegation($, text, forcedTier, cfg) : undefined
-      const asked = e.command === undefined && e.turnId === undefined && forcedTier === null
+      // Crew never switches models between prompts (every main-loop request goes to the orchestrator, which
+      // overrides the session's /model when that is another tier), so a prompt typed during a turn takes its hint now.
+      const hint = e.command === undefined ? await delegation($, text, forcedTier, cfg, e.turnId !== undefined) : undefined
+      const ask = e.command === undefined && e.turnId === undefined && forcedTier === null
         ? await ultracode($, text, heuristic(text, cfg.enableFable, { failedTools: await read($, strikes) }), cfg)
         : text
-      const ask = e.command === undefined ? withTag(asked, await read($, route)) : asked
+      if (e.command === undefined) {
+        await planTag($, text, e.turnId !== undefined, cfg)
+      }
       return next(hint === undefined ? { ...e, text: ask } : { ...e, text: ask, context: [...(e.context ?? []), hint] })
     }
     // Typed during a running turn: it runs on that turn's model, or waits for a turn of its own, routed then.
@@ -1278,8 +1489,8 @@ export const register: Register = (on, options) => {
       return next(e)
     }
     const verdict = await enter($, text, forcedTier, cfg, forcedWhy, parsedPrefix.nudge)
-    const asked = await ultracode($, text, verdict, cfg)
-    const ask = withTag(asked, await read($, route))
+    const ask = await ultracode($, text, verdict, cfg)
+    await planTag($, text, false, cfg)
     return next(ask === e.text ? e : { ...e, text: ask })
   }).catch(($, e, next) => next(e)) // routing is best effort: never hold a prompt back
 
@@ -1291,11 +1502,13 @@ export const register: Register = (on, options) => {
       await update($, strikes, () => 0)
       await update($, lastCall, () => null)
       await update($, hasEscalated, () => false)
+      await update($, lastStep, () => null)
       // A prompt that waited behind the last turn is routed now that its own turn begins.
       const waiting = (await read($, queued)).find(q => q.text === e.text)
       if (waiting !== undefined && !(await read($, isManual))) {
         await update($, queued, q => q.filter(x => x !== waiting))
         await enter($, waiting.text, waiting.tier, cfg, waiting.why, waiting.nudge)
+        await planTag($, waiting.text, false, cfg)
       }
     }
     return next(e)
@@ -1316,10 +1529,21 @@ export const register: Register = (on, options) => {
         }
         if (u !== null && base !== null && (await read($, workers)).includes(id)) {
           // A worker's request against the same request made by a subagent on the session's own model.
-          const actual = usd(u.model || e.model, u, cfg.cache)
+          const answered = u.model || e.model
+          const actual = usd(answered, u, cfg.cache)
           const would = usd(base, u, cfg.cache)
           if (actual !== undefined && would !== undefined) {
-            await bill($, { routedSteps: 1, actualUsd: actual, baselineUsd: would })
+            // Routed by the model that answered: a worker on the session's own model saves nothing.
+            const routedStep = canonical(answered) === canonical(base) ? 0 : 1
+            await bill($, {
+              routedSteps: routedStep,
+              actualUsd: actual,
+              baselineUsd: would,
+              workerSteps: 1,
+              workerRoutedSteps: routedStep,
+              workerActualUsd: actual,
+              workerBaselineUsd: would,
+            })
           }
         }
       } catch {}
@@ -1362,6 +1586,9 @@ export const register: Register = (on, options) => {
     // Never throw from here: the request already ran.
     try {
       const u = result.usage
+      // The model that answered, which the API names; the model sent stands in when the usage is missing.
+      const answered = u?.model || routed.model
+      await update($, lastStep, () => ({ requested: e.model, sent: routed.model, actual: answered, effort: routed.effort ?? null }))
       if (u !== null) {
         await cacheBill($, u)
         const prompt = promptOf(u)
@@ -1382,10 +1609,10 @@ export const register: Register = (on, options) => {
           // stand had every request gone there. A switch's cache write then shows as the cost it is.
           const was = await read($, shadow)
           const baseline = requestCost(e.model, prompt, cachedOf(was ?? undefined, prompt, startedAt, cfg.cache), u.output_tokens, cfg.cache)
-          const actual = requestCost(u.model || routed.model, prompt, u.cache_read_input_tokens, u.output_tokens, cfg.cache)
+          const actual = requestCost(answered, prompt, u.cache_read_input_tokens, u.output_tokens, cfg.cache)
           await update($, shadow, () => ({ tokens: prompt, at: startedAt }))
           if (baseline !== undefined && actual !== undefined) {
-            await bill($, { routedSteps: canonical(routed.model) === canonical(e.model) ? 0 : 1, actualUsd: actual, baselineUsd: baseline })
+            await bill($, { routedSteps: canonical(answered) === canonical(e.model) ? 0 : 1, actualUsd: actual, baselineUsd: baseline })
           }
         }
       }
@@ -1401,8 +1628,28 @@ export const register: Register = (on, options) => {
     }
     try {
       const r = await read($, route)
-      if (r !== null) {
-        await bill($, { turns: { [r.tier]: 1 } })
+      const last = await read($, lastStep)
+      // A turn counts under the model that answered its last request, not the one the route planned.
+      const ran = (last === null ? undefined : tierOf(last.actual)) ?? r?.tier
+      if (r !== null && ran !== undefined) {
+        await bill($, { turns: { [ran]: 1 } })
+      }
+      // A hand-off hint the orchestrator let pass: the turn ended with no spawn and no SendMessage to a worker.
+      if (cfg.mode === 'crew') {
+        await followThrough($, false, 'turn ended')
+      }
+      const key = await read($, promptKey)
+      if (key !== null && last !== null && !(await read($, isManual))) {
+        // The prompt's tag, corrected to the model and effort its turn's last request really went out with.
+        const tag = cfg.mode === 'crew' ? crewTag(await read($, noteTail), { text: ranLabel(last) }) : ranLabel(last)
+        if (tag !== null) {
+          await tagPrompt($, key, tag)
+        }
+        await update($, promptKey, () => null)
+      }
+      if (last !== null && !(await read($, isManual))) {
+        // What the turn really ran on: the session's /model as the engine asked for it, what was sent, what answered.
+        await log($, 'turn', { session: last.requested, sent: last.sent, actual: last.actual, effort: last.effort, from: tierOf(last.requested) ?? null, steps: await read($, steps) })
       }
       // The turn's shape is learned into the tier of the task it was, not the model it ran on; crew turns and
       // turns that escalated midway say nothing about a task tier.
@@ -1435,7 +1682,10 @@ export const register: Register = (on, options) => {
           }
         }
       }
-      const text = await read($, note)
+      const tail = cfg.mode === 'crew' ? await read($, noteTail) : null
+      // Crew: the line names the model and effort the turn's last request really went out with, which the
+      // prompt could only plan (the session's effort is known from its first request on).
+      const text = tail !== null && last !== null ? `model-router: ${ranLabel(last)} · ${tail}` : await read($, note)
       const cap = (await read($, budget)) ?? cfg.budgetUsd
       const l = await read($, ledger)
       const budgetNote = cap <= 0
@@ -1446,7 +1696,7 @@ export const register: Register = (on, options) => {
             ? `budget ${Math.min(999, Math.round((l.actualUsd / cap) * 100))}% used`
             : ''
       const savedTail = [
-        l.routedSteps > 0 ? `saved ≈${dollars(saved(l))}` : '',
+        l.routedSteps > 0 ? savingsText(saved(l), await ownName($)) : '',
         l.tokensSaved > 0 ? `≈${size(l.tokensSaved)} tok saved` : '',
       ].filter(Boolean).join(' · ')
       const budgetTail = budgetNote === '' || (text?.includes('budget') ?? false) ? '' : budgetNote
@@ -1469,6 +1719,10 @@ export const register: Register = (on, options) => {
       const name = workerName(worker)
       if (e.parentAgentId !== undefined && (await read($, workers)).includes(e.parentAgentId)) {
         return deny(e.tool_use_id, 'A worker does its task itself: do the work here and report.')
+      }
+      if (e.parentAgentId === undefined) {
+        // The orchestrator reached for a worker: the hand-off hint was taken (a refused spawn is told to SendMessage).
+        await followThrough($, true, 'spawn', name)
       }
       // One worker per model, while reusing it is cheaper than a fresh one. Two calls in one response must not
       // both pass the check, hence the synchronous claim.
@@ -1523,7 +1777,8 @@ export const register: Register = (on, options) => {
         await update($, lastCall, () => call)
         const failed = result.deny === undefined && result.isError === true && !denied.has(e.tool_use_id)
         const n = await update($, strikes, k => (failed || isRetry ? k + 1 : 0))
-        const up = cfg.mode === 'crew' ? WORKERS[WORKERS.indexOf(r.tier) + 1] : ORDER[rank(r.tier) + 1]
+        // A Fable orchestrator (`orchestrator: session` on Fable) has no stronger worker.
+        const up = cfg.mode === 'crew' ? (WORKERS.includes(r.tier) ? WORKERS[WORKERS.indexOf(r.tier) + 1] : undefined) : ORDER[rank(r.tier) + 1]
         if (n >= STRIKES && up !== undefined && (up !== 'fable' || cfg.enableFable) && !(await read($, hasEscalated))) {
           await update($, hasEscalated, () => true)
           const reason = failed ? 'tools keep failing' : 'going in circles'
@@ -1651,7 +1906,7 @@ export const register: Register = (on, options) => {
       added.push({ id: 'model-router:style', text, scope: 'session' as const })
     }
     if (cfg.mode === 'crew' && !isTeammate && e.tools.includes('Agent') && !(await read($, isManual))) {
-      added.push({ id: 'model-router:crew', text: crewSection(cfg.orchestrator, WORKERS, e.tools.includes('SendMessage')), scope: 'session' as const })
+      added.push({ id: 'model-router:crew', text: crewSection(await orchestratorOf($, cfg), WORKERS, e.tools.includes('SendMessage')), scope: 'session' as const })
     }
     return added.length === 0 ? composed : { sections: [...composed.sections, ...added] }
   })
