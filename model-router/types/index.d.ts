@@ -30,12 +30,17 @@ export type Warm = Record<string, { tokens: number; at: number }>
 export type Ledger = {
   /** Main-loop turns per tier. */
   turns: Record<Tier, number>
-  /** Requests the router sent to another model than the session's own (crew workers included). */
+  /** Requests that ran on another model than the session's own, by the model the API answered with (crew workers included). */
   routedSteps: number
   /** What the session's requests cost. */
   actualUsd: number
   /** What the same requests would have cost on the session's own model, with that model's own cache. */
   baselineUsd: number
+  /** The crew workers' share of the four above: their requests, the ones on another model, and their cost and baseline. */
+  workerSteps: number
+  workerRoutedSteps: number
+  workerActualUsd: number
+  workerBaselineUsd: number
   /** Re-routes the cost model allowed, and the ones it refused because the cache was worth more. */
   switches: number
   holds: number
@@ -59,6 +64,9 @@ export type Ledger = {
 /** What a request was sent with. */
 export type Sent = { model: string; effort: string | number | null }
 
+/** One main-loop request as it really went: the model the engine asked for, the one sent, the one that answered. */
+export type Step = { requested: string; sent: string; actual: string; effort: string | number | null }
+
 /** A prompt typed while a turn ran, routed when its own turn starts. */
 export type Queued = { text: string; tier: Tier | null; why?: string; nudge?: number }
 
@@ -78,6 +86,8 @@ declare module 'claude-code' {
       warm: Warm
       /** What the last main-loop request was sent with, and the session's own effort before any rewrite. */
       lastSent: Sent | null
+      /** The last main-loop request of the turn in progress, logged when the turn ends. */
+      lastStep: Step | null
       baseEffort: string | number | null
       /** The session model's cache as if every request had gone there: the baseline the savings are measured against. */
       shadow: { tokens: number; at: number } | null
@@ -108,9 +118,21 @@ declare module 'claude-code' {
       workerWarm: Record<string, { tokens: number; at: number; first: number }>
       /** The line shown beneath the turn's answer. */
       note: string | null
+      /** Crew: what follows the model in that line (`crew · no clear tier`); the model and effort are read from the request that ran. */
+      noteTail: string | null
       /** What the routed task is learned under (its rule, or judge/laya), for corrections that follow it. */
       category: string | null
       paneAsked: boolean
+      /** The model·effort tag of each prompt, by its words (keyOf): drawn under the prompt's row, never sent. */
+      tags: Record<string, string>
+      /** The key of the prompt whose turn runs now, so its tag is corrected to what really ran. */
+      promptKey: string | null
+      /** The last tag: the label beside the prompt footer's modes. */
+      lastTag: string | null
+      /** Crew: the last task handed to a worker, which a short follow-up ("tak rób") continues. */
+      crewTask: { tier: ModelTier; worker: string } | null
+      /** Crew: a hand-off hint given this turn, waiting for the orchestrator's spawn or SendMessage. */
+      pendingHandoff: { tier: ModelTier; worker: string; address: string | null; prompt: string } | null
     }
   }
 }

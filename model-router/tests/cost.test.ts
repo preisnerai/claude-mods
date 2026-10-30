@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { CACHE, PROFILE, addLedger, cacheHitRate, cacheKey, dollars, emptyLedger, learn, priceOf, requestCost, saved, size, switchDelta, turnCost, usd } from '../hooks/cost'
+import { CACHE, PROFILE, addLedger, cacheHitRate, cacheKey, dollars, emptyLedger, learn, mainSaved, priceOf, requestCost, saved, savingsText, size, switchDelta, turnCost, usd, workerSaved } from '../hooks/cost'
 
 function near(actual: number | undefined, expected: number) {
   expect({ actual, near: Math.abs((actual ?? NaN) - expected) < 1e-9 }).toEqual({ actual, near: true })
@@ -110,4 +110,23 @@ test('money and counts read well at every size', async () => {
 test('cache hit rate counts requests that read any cache', async () => {
   expect(cacheHitRate(emptyLedger())).toBeUndefined()
   expect(cacheHitRate(addLedger(emptyLedger(), { cacheHits: 3, cacheMisses: 1 }))).toBe(0.75)
+})
+
+test('a saving reads as saved, a loss as extra against the session model, never as a negative saving', () => {
+  expect(savingsText(0.12, 'Opus')).toBe('saved ≈$0.120')
+  expect(savingsText(0, 'Opus')).toBe('saved ≈$0.000')
+  expect(savingsText(-0.4, 'Haiku')).toBe('extra ≈$0.400 vs your Haiku')
+})
+
+test('the ledger splits the workers from the main loop, and an older stored ledger adds up without NaN', () => {
+  let l = addLedger(emptyLedger(), { routedSteps: 1, actualUsd: 0.5, baselineUsd: 0.1 })
+  l = addLedger(l, { routedSteps: 1, actualUsd: 0.01, baselineUsd: 0.2, workerSteps: 1, workerRoutedSteps: 1, workerActualUsd: 0.01, workerBaselineUsd: 0.2 })
+  near(workerSaved(l), 0.19)
+  near(mainSaved(l), -0.4)
+  near(saved(l), -0.21)
+
+  const { workerSteps: _a, workerRoutedSteps: _b, workerActualUsd: _c, workerBaselineUsd: _d, ...old } = emptyLedger()
+  const grown = addLedger(old as never, { workerSteps: 1, workerActualUsd: 0.02 })
+  expect(grown.workerSteps).toBe(1)
+  near(grown.workerActualUsd, 0.02)
 })

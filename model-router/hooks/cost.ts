@@ -160,6 +160,10 @@ export function emptyLedger(): Ledger {
     routedSteps: 0,
     actualUsd: 0,
     baselineUsd: 0,
+    workerSteps: 0,
+    workerRoutedSteps: 0,
+    workerActualUsd: 0,
+    workerBaselineUsd: 0,
     switches: 0,
     holds: 0,
     judgeCalls: 0,
@@ -184,18 +188,37 @@ export function addLedger(ledger: Ledger, delta: LedgerDelta): Ledger {
   for (const [key, value] of Object.entries(delta) as [keyof Ledger, unknown][]) {
     if (key === 'turns') {
       for (const [tier, n] of Object.entries(value as Partial<Record<Tier, number>>) as [Tier, number][]) {
-        next.turns[tier] += n
+        next.turns[tier] = (next.turns[tier] ?? 0) + n
       }
     } else {
-      ;(next[key] as number) += value as number
+      // A ledger stored by an older version lacks the newer fields: they start from 0, never NaN.
+      ;(next[key] as number) = ((next[key] as number | undefined) ?? 0) + (value as number)
     }
   }
   return next
 }
 
-/** Money saved: what the session's own model would have charged, minus what was charged, minus judging. */
+/** Money saved: what the session's own model would have charged, minus what was charged, minus judging. Negative: it cost more. */
 export function saved(ledger: Ledger): number {
   return ledger.baselineUsd - ledger.actualUsd - ledger.judgeUsd
+}
+
+/** The crew workers' part of `saved`: their requests against the same requests on the session's own model. */
+export function workerSaved(ledger: Ledger): number {
+  return (ledger.workerBaselineUsd ?? 0) - (ledger.workerActualUsd ?? 0)
+}
+
+/** The main loop's part of `saved`, judging included. */
+export function mainSaved(ledger: Ledger): number {
+  return saved(ledger) - workerSaved(ledger)
+}
+
+/**
+ * A saving for people: `saved ≈$0.12`, or, when routing cost more than the session's own model would have,
+ * `extra ≈$0.40 vs your Haiku`, never a `saved -$0.40`.
+ */
+export function savingsText(n: number, baseline: string): string {
+  return n >= 0 ? `saved ≈${dollars(n)}` : `extra ≈${dollars(-n)} vs your ${baseline}`
 }
 
 /** Share of requests that read any cache; undefined before the first cacheable request. */
