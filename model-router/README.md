@@ -16,8 +16,9 @@ Cache-aware model routing, rtk-style Bash output compression and terse answers f
 | `hooks/adapt.ts` | effort per task (never `max` or `ultracode`), the Desktop effort labels, the ultracode check, the learned per-category bias |
 | `hooks/why.ts` | turns the last decision entry into the `/router why` explanation |
 | `hooks/cost.ts` | list prices, cache-aware turn cost, switch economics, the savings and cache-hit ledger |
+| `hooks/history.ts` | the savings history: per-session records, calendar weeks and months, totals, sources, ranking, `/router stats` text |
 | `hooks/compact.ts` | auto-compact: renders the transcript, sums with the cheap model in ~100k-token chunks, keeps the recent tail word for word |
-| `hooks/compress.ts` | rtk-lite: command families, noise and passing-test filters, folding, cutting, `rtk pipe` filters |
+| `hooks/compress.ts` | rtk-lite: command families, noise, per-tool progress and passing-test filters, folding, cutting, `rtk pipe` filters |
 | `hooks/crew.ts` | crew mode: worker definitions, the orchestrator's section, delegation hints |
 | `hooks/style.ts` | the `terse` and `adhd` system-prompt sections |
 | `types/index.d.ts` | the `$.state` contract |
@@ -31,4 +32,4 @@ claude plugin test .
 claude --plugin-dir .
 ```
 
-Prices in `hooks/cost.ts` are Anthropic's first-party list prices of October 2026; update them when they change. After touching the rules in `hooks/classify.ts`, run the tests: `tests/classify.test.ts` holds the prompt set they are scored against. Every decision is mirrored to `~/.claude/model-router/decisions.json`; copy a misrouted prompt or effort from there into the corpus with the tier it should have had.
+Prices in `hooks/cost.ts` are Anthropic's first-party list prices of October 2026; update them when they change, and `PRICES_VERSION` with them (each history record keeps it). After touching the rules in `hooks/classify.ts`, run the tests: `tests/classify.test.ts` holds the prompt set they are scored against. Every decision is mirrored to `~/.claude/model-router/decisions.json`; copy a misrouted prompt or effort from there into the corpus with the tier it should have had.

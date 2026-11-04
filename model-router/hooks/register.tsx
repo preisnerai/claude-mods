@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentStatus, EngineInterface, Register } from 'claude-code'
 
-import type { Effort, Ledger, Route, Sent, Step, Style, Tier } from '../types'
+import type { Effort, Ledger, Route, SessionRecord, Sent, Step, Style, Tier } from '../types'
 import { EFFORTS, ULTRACODE, categoryOf, clampEffort, effortFor, effortLabel, isHardest, learnedLine, nudge, shiftOf, shiftTier } from './adapt'
 import type { Bias } from './adapt'
 import {
@@ -20,9 +20,11 @@ import {
 } from './classify'
 import type { Verdict } from './classify'
 import { MIN_CHARS, compress, familyOf, keepsSignal, rtkFilter } from './compress'
-import { CACHE, PROFILE, addLedger, cacheHitRate, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, mainSaved, promptOf, requestCost, saved, savingsText, size, switchDelta, turnCost, usd, workerSaved } from './cost'
+import { CACHE, PRICES_VERSION, PROFILE, addLedger, cacheHitRate, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, mainSaved, promptOf, requestCost, saved, savingsText, size, switchDelta, turnCost, usd, workerSaved } from './cost'
 import { estimateTokens, summarize } from './compact'
 import type { Cache, LedgerDelta, Profile, Target } from './cost'
+import { bar, compareLine, countLine, dayLabel, folderName, isEmptyDelta, ledgerSince, netLine, readHistoryText, serializeHistory, sessionDetail, sessionLine, shiftOffset, statsText, summarizePeriod, tokenParts, trim, upsert, usdParts } from './history'
+import type { Period } from './history'
 import { WORKERS, crewSection, delegationHint, followUpHint, tierOfWorker, workerName, workerSpec, workerType } from './crew'
 import { STYLE, isStyle } from './style'
 import { explainDecision, lastDecision, lastUltracodeAfter } from './why'
@@ -46,6 +48,7 @@ const COMMANDS = [
   { name: 'router-effort', description: 'model-router: show or set effort mode (auto|task|fixed)' },
   { name: 'router-ultracode', description: 'model-router: Ultracode mode (suggest|auto|off)' },
   { name: 'router-cache', description: 'model-router: cache hit rate, reads/writes and warm entries' },
+  { name: 'router-stats', description: 'model-router: savings history by week or month (week|month [n])' },
   { name: 'router-budget', description: 'model-router: show or set the session budget' },
   { name: 'router-compact', description: 'model-router: auto-compact status (on|off|now)' },
   { name: 'router-log', description: 'model-router: last 50 raw decisions as JSON' },
@@ -67,6 +70,7 @@ const HELP = [
   '- **`/router-effort [mode]`** — show the effort policy; set `auto`, `task` or `fixed` for this session.',
   '- **`/router-ultracode [mode]`** — show or set Ultracode: `suggest`, `auto` or `off`.',
   '- **`/router-cache`** — cache hit rate, reads/writes and warm entries.',
+  '- **`/router-stats [week|month] [n]`** — savings history: totals, days and every session, best first; `n` periods back.',
   '- **`/router-budget [usd|off]`** — show or set the session budget.',
   '- **`/router-compact [on|off|now]`** — auto-compact the session with the cheap model at the tier threshold.',
   '- **`/router-log`** — the last 50 raw decisions as JSON, for calibration.',
@@ -83,6 +87,7 @@ const HELP = [
   '- **`/router effort [mode]`** — same as `/router-effort`.',
   '- **`/router ultracode [mode]`** — same as `/router-ultracode`.',
   '- **`/router cache`** — same as `/router-cache`.',
+  '- **`/router stats [week|month] [n]`** — same as `/router-stats`.',
   '- **`/router budget [usd|off]`** — same as `/router-budget`.',
   '- **`/router compact [on|off|now]`** — same as `/router-compact`.',
   '- **`/router log`** — same as `/router-log`.',
@@ -152,6 +157,9 @@ const lastTag = atom({ plugin: 'model-router', key: 'lastTag' } as const, null)
 const crewTask = atom({ plugin: 'model-router', key: 'crewTask' } as const, null)
 const pendingHandoff = atom({ plugin: 'model-router', key: 'pendingHandoff' } as const, null)
 const category = atom({ plugin: 'model-router', key: 'category' } as const, null)
+const history = atom({ plugin: 'model-router', key: 'history' } as const, [])
+const historyMark = atom({ plugin: 'model-router', key: 'historyMark' } as const, null)
+const statsView = atom({ plugin: 'model-router', key: 'statsView' } as const, { view: 'session', offset: 0, open: null })
 
 type $ = EngineInterface
 
@@ -364,6 +372,60 @@ async function bill($: $, delta: LedgerDelta) {
   try {
     await storeUpdate<Ledger>($, 'ledger', all => addLedger({ ...emptyLedger(), ...all }, delta))
   } catch {}
+}
+
+/** The savings history: one JSON line per session, beside the decision log. */
+async function historyPath($: $): Promise<string> {
+  return `${await configBase($)}/model-router/history.jsonl`
+}
+
+/** The history on disk; [] when there is none yet. Rejects when the file is there but cannot be read. */
+async function readHistory($: $): Promise<SessionRecord[]> {
+  const path = await historyPath($)
+  if (!(await $.fs.exists(path))) {
+    return []
+  }
+  const text = await $.fs.read(path)
+  const { records, skipped } = readHistoryText(text)
+  if (skipped > 0) {
+    // Lines it cannot read are dropped by the next write: keep the file as it was first.
+    await $.fs.write(`${path}.bad`, text)
+  }
+  return records
+}
+
+/** Reads the history into the pane's state (other sessions write it too). */
+async function loadHistory($: $): Promise<void> {
+  try {
+    const records = await readHistory($)
+    await update($, history, () => records)
+  } catch {}
+}
+
+let historyQueue: Promise<void> = Promise.resolve()
+
+/**
+ * Adds what this session billed since the last write to its record in the history, re-read from disk first so
+ * another session's lines stay. Called at every turn's end and at the session's, so a crash loses one turn at most.
+ * A file that is there but cannot be read is never overwritten.
+ */
+function recordHistory($: $, cfg: Config, sessionId?: string): Promise<void> {
+  const run = historyQueue.then(async () => {
+    const now = await read($, ledger)
+    const delta = ledgerSince(now, (await read($, historyMark))?.last ?? null)
+    if (isEmptyDelta(delta)) {
+      return
+    }
+    const records = await readHistory($)
+    const id = sessionId ?? (await $.session.id())
+    const info = { project: folderName(await $.session.cwd().catch(() => '')), model: await ownModel($), mode: cfg.mode, prices: PRICES_VERSION }
+    const next = upsert(records, id, delta, await $.clock.now(), info)
+    await $.fs.write(await historyPath($), serializeHistory(next))
+    await update($, historyMark, () => ({ last: now }))
+    await update($, history, () => next)
+  })
+  historyQueue = run.catch(() => {})
+  return historyQueue
 }
 
 type Usage = { input_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
@@ -993,14 +1055,14 @@ async function shrink($: $, block: Block, cfg: Config): Promise<Block> {
   }
 
   const filtered = await viaRtk($, command, raw, cfg)
-  let body = filtered ?? compress(raw, family, { allowCut: true }).text
+  let body = filtered ?? compress(raw, family, { allowCut: true, command }).text
   if (body === raw) {
     return block
   }
   // Whatever is no longer in the result is on disk, or the result does not drop it.
   const path = await tee($, id, command, raw)
   if (path === undefined && filtered === undefined) {
-    body = compress(raw, family, { allowCut: false }).text
+    body = compress(raw, family, { allowCut: false, command }).text
   }
   const out = path === undefined ? body : `${body}\n[model-router: ${filtered === undefined ? 'compressed' : 'filtered by rtk'}; full output: '${path}' (grep or sed -n it)]`
   // The note counts against the saving: under 10% saved, the output goes as it came.
@@ -1061,9 +1123,22 @@ async function report($: $, cfg: Config): Promise<string> {
 }
 
 async function runRouter($: $, args: string, cfg: Config): Promise<{ text: string }> {
-    const [sub = '', arg = ''] = args.trim().toLowerCase().split(/\s+/)
+    const [sub = '', arg = '', extra = ''] = args.trim().toLowerCase().split(/\s+/)
     if (sub === 'help' || sub === 'commands') {
       return { text: HELP }
+    }
+    if (sub === 'stats' || sub === 'history') {
+      // `/router stats month 2`: two months back. A number alone counts weeks.
+      const kind: Period = arg === 'month' || arg === 'm' ? 'month' : 'week'
+      const back = Number(/^\d+$/.test(arg) ? arg : extra)
+      try {
+        await recordHistory($, cfg)
+        const records = await readHistory($)
+        await update($, history, () => records)
+        return { text: statsText(records, kind, await $.clock.now(), Number.isFinite(back) ? -Math.floor(back) : 0, await historyPath($)) }
+      } catch (err) {
+        return { text: `model-router: the savings history could not be read (${err instanceof Error ? err.message : 'unknown'}); it lives in ${await historyPath($)}.` }
+      }
     }
     if (sub === 'start') {
       const model = await $.session.model()
@@ -1309,6 +1384,12 @@ export const register: Register = (on, options) => {
       } catch {}
     }
     $.ui.open({ id: PANE, title: 'Model router' }).catch(() => {})
+    // The history counts what this session bills from here on; a reload keeps the mark it had.
+    if ((await read($, historyMark)) === null) {
+      const at = await read($, ledger)
+      await update($, historyMark, () => ({ last: at }))
+    }
+    void loadHistory($)
     if (cfg.mode === 'crew') {
       for (const t of WORKERS) {
         try {
@@ -1320,7 +1401,71 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const v = await read($, statsView)
+    // session · week · month: the live session, or the history file by calendar week (Mon–Sun) or month.
+    const tabs = (
+      <Box flexDirection="row" gap={1}>
+        {(['session', 'week', 'month'] as const).map(k => (
+          <Button
+            key={`view-${k}`}
+            label={k}
+            hotkey={k[0]}
+            dimColor={v.view !== k}
+            onPress={async () => {
+              await update($, statsView, () => ({ view: k, offset: 0, open: null }))
+              if (k !== 'session') {
+                await recordHistory($, cfg)
+                await loadHistory($)
+              }
+            }}
+          />
+        ))}
+      </Box>
+    )
+    if (v.view !== 'session') {
+      const kind = v.view
+      const s = summarizePeriod(await read($, history), kind, await $.clock.now(), v.offset)
+      const move = (step: number) => async () => {
+        const records = await read($, history)
+        const at = await $.clock.now()
+        await update($, statsView, x => ({ ...x, open: null, offset: shiftOffset(records, kind, at, x.offset, step) }))
+      }
+      const widest = Math.max(0, ...s.days.map(d => Math.abs(d.usd)))
+      const { best, worst, hidden } = trim(s.sessions, 12)
+      const row = (rec: SessionRecord) => [
+        <Button key={`session-${rec.id}`} plain onPress={() => update($, statsView, x => ({ ...x, open: x.open === rec.id ? null : rec.id }))}>
+          <Text color={saved(rec.ledger) < 0 ? 'yellow' : 'green'}>{`${v.open === rec.id ? '▾' : '▸'} ${sessionLine(rec)}`}</Text>
+        </Button>,
+        ...(v.open === rec.id ? sessionDetail(rec).map(line => <Text dimColor>{`  ${line}`}</Text>) : []),
+      ]
+      return (
+        <Box flexDirection="column">
+          {tabs}
+          <Box flexDirection="row" gap={1}>
+            <Button key="period-prev" label="←" hotkey="p" onPress={move(-1)} />
+            <Text bold>{s.label}</Text>
+            {v.offset < 0 && <Button key="period-next" label="→" hotkey="n" onPress={move(1)} />}
+          </Box>
+          <Text color={s.current.usd < 0 ? 'yellow' : 'green'}>{s.current.sessions === 0 ? 'net — · no sessions recorded' : netLine(s.current.usd, s.current.tokens)}</Text>
+          <Text dimColor>{countLine(s.current)}</Text>
+          <Text dimColor>{compareLine(s)}</Text>
+          {s.current.sessions > 0 && <Text dimColor>{usdParts(s.current.parts)}</Text>}
+          {s.current.sessions > 0 && <Text dimColor>{tokenParts(s.current.parts)}</Text>}
+          {s.days
+            .filter(d => kind === 'week' || d.sessions > 0)
+            .map(d => (
+              <Text color={d.sessions === 0 ? undefined : d.usd < 0 ? 'yellow' : 'green'} dimColor={d.sessions === 0}>
+                {d.sessions === 0 ? `${dayLabel(d.start)} —` : `${dayLabel(d.start)} ${bar(d.usd, widest, 10).padEnd(10)} ${netLine(d.usd, d.tokens).slice(4)}`}
+              </Text>
+            ))}
+          {s.sessions.length > 0 && <Text dimColor>sessions, best first · press one for its numbers</Text>}
+          {best.flatMap(row)}
+          {hidden > 0 && <Text dimColor>{`… ${hidden} more · /router stats ${kind}`}</Text>}
+          {worst.flatMap(row)}
+        </Box>
+      )
+    }
     const l = await read($, ledger)
     const r = await read($, route)
     const manual = await read($, isManual)
@@ -1331,6 +1476,7 @@ export const register: Register = (on, options) => {
     const name = await ownName($)
     return (
       <Box flexDirection="column">
+        {tabs}
         <Text bold>{manual ? 'off · /router on' : r === null ? 'not routed yet' : label}</Text>
         <Text color={money < 0 ? 'yellow' : 'green'}>{l.baselineUsd === 0 ? 'saved —' : savingsText(money, name)}</Text>
         {ORDER.filter(t => l.turns[t] > 0).map(t => (
@@ -1395,6 +1541,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'router-effort' }, async ($, e) => runRouter($, e.args === '' ? 'effort' : `effort ${e.args}`, cfg))
   on('command.run', { command: 'router-ultracode' }, async ($, e) => runRouter($, e.args === '' ? 'ultracode' : `ultracode ${e.args}`, cfg))
   on('command.run', { command: 'router-cache' }, async ($) => runRouter($, 'cache', cfg))
+  on('command.run', { command: 'router-stats' }, async ($, e) => runRouter($, `stats ${e.args}`, cfg))
   on('command.run', { command: 'router-budget' }, async ($, e) => runRouter($, e.args === '' ? 'budget' : `budget ${e.args}`, cfg))
   on('command.run', { command: 'router-compact' }, async ($, e) => runRouter($, e.args === '' ? 'compact' : `compact ${e.args}`, cfg))
   on('command.run', { command: 'router-log' }, async ($) => runRouter($, 'log', cfg))
@@ -1634,6 +1781,7 @@ export const register: Register = (on, options) => {
       if (r !== null && ran !== undefined) {
         await bill($, { turns: { [ran]: 1 } })
       }
+      await recordHistory($, cfg)
       // A hand-off hint the orchestrator let pass: the turn ended with no spawn and no SendMessage to a worker.
       if (cfg.mode === 'crew') {
         await followThrough($, false, 'turn ended')
@@ -1840,6 +1988,8 @@ export const register: Register = (on, options) => {
 
   // /clear starts a new conversation and /resume another one: only the system prompt and tools stay cached.
   on('session.end', async ($, e, next) => {
+    // The ending session's last turn into its history record; after /clear the next record is the new session's.
+    await recordHistory($, cfg, e.sessionId)
     if (e.reason === 'clear' || e.reason === 'resume') {
       const keep = await read($, prefix)
       await update($, route, () => null)

@@ -8,6 +8,9 @@ export type Card = { input: number; output: number; read: number }
 /** A model's prices: one card, and for some models a dearer one past a prompt size. */
 export type Price = Card & { long?: Card & { above: number } }
 
+/** The price table below, by when it was taken; each savings-history record keeps it. Change it with the prices. */
+export const PRICES_VERSION = '2026-10'
+
 // Anthropic first-party list prices (October 2026). Longest id first, so `claude-opus-5-5` wins over `claude-opus-5`.
 // Haiku 5.5 bills a prompt over 100K tokens at $0.50 / $2.50 (cache reads at the usual tenth of input).
 const PRICES: [string, Price][] = (
