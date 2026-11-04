@@ -7,12 +7,15 @@ import { addLedger, emptyLedger, saved } from '../hooks/cost'
 import {
   bar,
   compareLine,
+  dayRow,
   daysOf,
+  fit,
   folderName,
   inSpan,
   isEmptyDelta,
   ledgerSince,
   offsetOf,
+  paneWidth,
   parseHistory,
   partsOf,
   periodLabel,
@@ -20,9 +23,13 @@ import {
   ranked,
   readHistoryText,
   serializeHistory,
+  sessionRow,
   shiftOffset,
+  shortRange,
   signedUsd,
+  sourcesLine,
   statsText,
+  subLine,
   summarizePeriod,
   totals,
   trim,
@@ -189,6 +196,38 @@ test('money, bars and folders read well', () => {
   expect([folderName('/home/dev/my-app/'), folderName('C:\\Users\\dev\\work\\api'), folderName('')]).toEqual(['my-app', 'api', ''])
 })
 
+test('pane rows fill the pane width exactly and cut only the left part', () => {
+  expect(fit('Nov 4 10:00 a-very-long-project-folder-name', '+$0.420', 30)).toBe('Nov 4 10:00 a-very-lo… +$0.420')
+  expect(fit('Nov 4 10:00 app', '-$0.100', 30)).toBe('Nov 4 10:00 app        -$0.100')
+  for (const width of [24, 30, 38]) {
+    const r = rec('s', at(11, 4, 10), { actualUsd: 0.7, baselineUsd: 0.2, tokensSaved: 12_000 })
+    const row = sessionRow({ ...r, project: 'a-folder-with-a-long-name' }, width)
+    expect((row.left + row.right).length).toBe(width)
+    expect(row.right).toBe('≈12k -$0.500')
+  }
+  expect([paneWidth(undefined), paneWidth(10), paneWidth(36), paneWidth(200)]).toEqual([34, 24, 36, 40])
+})
+
+test('a day is a thin bar against the biggest day of the period, its net at the right; an empty day a dot', () => {
+  const days = [{ start: at(11, 2, 0), usd: 1, tokens: 0, sessions: 2 }, { start: at(11, 3, 0), usd: -0.25, tokens: 0, sessions: 1 }, { start: at(11, 4, 0), usd: 0, tokens: 0, sessions: 0 }]
+  const [big, loss, none] = days.map(d => dayRow(d, 1, 30))
+  expect(`${big!.label} ${big!.bar} ${big!.amount}`.length).toBe(30)
+  expect(big!.bar.trim()).toBe('━'.repeat(big!.bar.length))
+  expect([loss!.isLoss, loss!.bar.trim().length, loss!.amount]).toEqual([true, Math.round(big!.bar.length / 4), '-$0.250'])
+  expect([none!.isEmpty, none!.bar, none!.amount]).toEqual([true, '·', ''])
+})
+
+test('the pane leaves out every source that is zero, and says the week in a few cells', () => {
+  expect(sourcesLine(partsOf(addLedger(emptyLedger(), { actualUsd: 0.6, baselineUsd: 0.1 })))).toBe('routing -$0.500')
+  expect(sourcesLine(partsOf(emptyLedger()))).toBe('')
+  expect(sourcesLine(partsOf(addLedger(emptyLedger(), { baselineUsd: 1, actualUsd: 0.5, workerBaselineUsd: 0.4, workerActualUsd: 0.1, rawChars: 8_000, keptChars: 0, tokensSaved: 5_000 })))).toBe('routing +$0.200 · crew +$0.300 · ≈2.0k tok compressed · ≈3.0k tok compacted')
+  expect([shortRange('week', periodSpan('week', at(11, 4))), shortRange('week', periodSpan('week', NOW)), shortRange('month', periodSpan('month', NOW))]).toEqual(['Nov 2 – 8', 'Oct 26 – Nov 1', 'Oct 2026'])
+  const records = [rec('a', at(10, 27), { actualUsd: 0.2, baselineUsd: 1.2, tokensSaved: 9_000 }), rec('b', at(10, 28), { actualUsd: 0.4, baselineUsd: 0.2 }), rec('c', at(10, 20), { actualUsd: 0.1, baselineUsd: 0.6 })]
+  expect(subLine(summarizePeriod(records, 'week', NOW, 0))).toBe('2 sessions · 1 cost more · ≈9.0k tok · vs last week +$0.300')
+  expect(subLine(summarizePeriod(records, 'week', NOW, -1))).toBe('1 session')
+  expect(subLine(summarizePeriod([], 'month', NOW, 0))).toBe('no sessions')
+})
+
 // The mod itself: what it writes to the history file as a session goes on, and the pane and command that read it.
 
 function world(on: On, opts: { readFails?: boolean } = {}) {
@@ -306,19 +345,24 @@ test('/router stats and the pane read the history by week', { options: { mode: '
     await ui.unmount()
   }
 
-  expect(await shows(/^this week/)).toEqual([false, false])
+  expect(await shows(/^This week$/)).toEqual([false, false])
   await press('view-week')
-  expect(await shows(/^this week/)).toEqual([true, true])
-  expect(await shows(/^net \+\$/)).toEqual([true, true])
+  expect(await shows(/^This week$/)).toEqual([true, true])
+  expect(await shows(/^Oct 26 – Nov 1$/)).toEqual([true, true])
+  expect(await shows(/^\+\$0\.\d{3}$/)).toEqual([true, true])
+  expect(await shows(/^1 session · vs last week \+\$/)).toEqual([true, true])
+  // Nothing that is zero is drawn: no crew, judge or compaction line in a week of routing alone.
+  expect(await shows(/crew|judge|compact/)).toEqual([false, false])
   await press('period-prev')
-  expect(await shows(/^last week/)).toEqual([true, true])
-  expect(await shows(/^net -\$0\.300/)).toEqual([true, true])
-  expect(await shows(/^vs Oct 12 – Oct 18: no sessions then/)).toEqual([true, true])
+  expect(await shows(/^Last week$/)).toEqual([true, true])
+  expect(await shows(/^-\$0\.300$/)).toEqual([true, true])
+  expect(await shows(/^1 session · 1 cost more$/)).toEqual([true, true])
+  expect(await shows(/^routing -\$0\.300$/)).toEqual([true, true])
   // Back to the current week, and no further.
   await press('period-next')
   await press('period-prev')
   await press('period-next')
-  expect(await shows(/^this week/)).toEqual([true, true])
+  expect(await shows(/^This week$/)).toEqual([true, true])
   await press('period-prev')
   await press('session-session-0')
   expect(await shows(/spent \$0\.500 instead of \$0\.200/)).toEqual([true, true])

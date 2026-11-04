@@ -363,19 +363,95 @@ export function sessionLine(r: SessionRecord): string {
   return [signedUsd(recordUsd(r)), `≈${size(recordTokens(r))} tok`, stamp(r.start), r.project].filter(Boolean).join(' · ')
 }
 
-/** What a session's numbers are made of, to check one against the ledger it came from. */
+/**
+ * What a session's numbers are made of, to check one against the ledger it came from: short lines, the sources
+ * that are zero left out.
+ */
 export function sessionDetail(r: SessionRecord): string[] {
   const l = r.ledger
-  const p = partsOf(l)
-  const turns = (Object.entries(l.turns) as [Tier, number][]).filter(([, n]) => n > 0).map(([t, n]) => `${modelName(t)} ${n}`).join(' · ') || 'none'
+  const turns = (Object.entries(l.turns) as [Tier, number][]).filter(([, n]) => n > 0).map(([t, n]) => `${modelName(t)} ${n}`).join(' · ')
   const requests = l.cacheHits + l.cacheMisses
+  const sources = sourcesLine(partsOf(l))
   return [
-    `${stamp(r.start)} → ${stamp(r.end)} · vs your ${modelName(r.model)} · ${r.mode || '?'} · prices ${r.prices || '?'}`,
-    `spent ${dollars(l.actualUsd + l.judgeUsd)} instead of ${dollars(l.baselineUsd)} · ${l.routedSteps} requests on another model`,
-    usdParts(p),
-    tokenParts(p),
-    `turns ${turns} · cache ${requests === 0 ? '—' : `${Math.round((l.cacheHits / requests) * 100)}%`} · session ${r.id.slice(0, 8)}`,
-  ]
+    `${stamp(r.start)} → ${stamp(r.end).replace(`${day(r.start)} `, '')} · vs ${modelName(r.model)}`,
+    `spent ${dollars(l.actualUsd + l.judgeUsd)} instead of ${dollars(l.baselineUsd)}`,
+    ...(sources === '' ? [] : [sources]),
+    [turns === '' ? '' : `turns ${turns}`, requests === 0 ? '' : `cache ${Math.round((l.cacheHits / requests) * 100)}%`].filter(Boolean).join(' · '),
+    `prices ${r.prices || '?'} · ${r.id.slice(0, 8)}`,
+  ].filter(Boolean)
+}
+
+// ---- the pane: one line per row at the pane's width, nothing that is zero -------------------------------------
+
+/** The pane's width in cells: what it reports, within what a side pane can hold. */
+export function paneWidth(bodyColumns: number | undefined): number {
+  return Math.max(24, Math.min(40, Math.floor(bodyColumns ?? 34)))
+}
+
+/** `left … right` in exactly `width` cells: the left part cut with an ellipsis, never the right. */
+export function fit(left: string, right: string, width: number): string {
+  const room = Math.max(1, width - right.length - 1)
+  const cut = left.length > room ? `${left.slice(0, Math.max(0, room - 1)).trimEnd()}…` : left
+  return `${cut}${' '.repeat(Math.max(1, width - cut.length - right.length))}${right}`
+}
+
+/** The money sources that are not zero, then the token sources: `routing +$1.50 · crew +$0.200 · ≈12k tok compressed`. */
+export function sourcesLine(p: Parts): string {
+  const usd = ([['routing', p.routing], ['crew', p.workers], ['judge', p.judge]] as const).filter(([, n]) => Math.abs(n) >= 0.0005).map(([name, n]) => `${name} ${signedUsd(n)}`)
+  const tok = ([['compressed', p.compression], ['compacted', p.compaction]] as const).filter(([, n]) => n > 0).map(([name, n]) => `≈${size(n)} tok ${name}`)
+  return [...usd, ...tok].join(' · ')
+}
+
+/** The period in a few cells: `Nov 2 – 8`, `Oct 26 – Nov 1`, `Oct 2026`. */
+export function shortRange(kind: Period, span: Span): string {
+  const a = new Date(span.start)
+  if (kind === 'month') {
+    return `${MONTHS[a.getMonth()]} ${a.getFullYear()}`
+  }
+  const b = new Date(span.end - 86_400_000 / 2)
+  return a.getMonth() === b.getMonth() ? `${day(span.start)} – ${b.getDate()}` : `${day(span.start)} – ${day(b.getTime())}`
+}
+
+/** `This week`, `Last month`, or nothing for an older period (its range says it). */
+export function relativeName(kind: Period, offset: number): string {
+  return offset === 0 ? `This ${kind}` : offset === -1 ? `Last ${kind}` : ''
+}
+
+/** The line under the big number: `7 sessions · 2 cost more · ≈182k tok · vs last week +$1.20`. */
+export function subLine(s: Summary): string {
+  if (s.current.sessions === 0) {
+    return s.previous.sessions === 0 ? 'no sessions' : `no sessions · ${relativeName(s.kind, s.offset - 1).toLowerCase() || 'before'} ${signedUsd(s.previous.usd)}`
+  }
+  const t = s.current
+  const before = relativeName(s.kind, s.offset - 1).toLowerCase() || `the ${s.kind} before`
+  return [
+    `${t.sessions} session${t.sessions === 1 ? '' : 's'}`,
+    t.costlier > 0 ? `${t.costlier} cost more` : '',
+    t.tokens > 0 ? `≈${size(t.tokens)} tok` : '',
+    s.previous.sessions > 0 ? `vs ${before} ${signedUsd(t.usd - s.previous.usd)}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+/** One day as the pane draws it: a short label, a bar against the period's biggest day, the net at the right. */
+export type DayRow = { label: string; bar: string; amount: string; isEmpty: boolean; isLoss: boolean }
+
+export function dayRow(d: Day, widest: number, width: number): DayRow {
+  const label = dayLabel(d.start)
+  if (d.sessions === 0) {
+    return { label, bar: '·', amount: '', isEmpty: true, isLoss: false }
+  }
+  const amount = signedUsd(d.usd)
+  const room = Math.max(3, width - label.length - amount.length - 2)
+  const n = Math.abs(d.usd) < EPSILON || widest <= 0 ? 0 : Math.max(1, Math.round((Math.abs(d.usd) / widest) * room))
+  return { label, bar: '━'.repeat(n).padEnd(room), amount, isEmpty: false, isLoss: d.usd < -EPSILON }
+}
+
+/** One session as the pane lists it: `Nov 4 10:00 my-app` on the left, its net (and tokens) on the right. */
+export function sessionRow(r: SessionRecord, width: number): { left: string; right: string } {
+  const tokens = recordTokens(r)
+  const right = `${tokens > 0 ? `≈${size(tokens)} ` : ''}${signedUsd(recordUsd(r))}`
+  const line = fit(`${stamp(r.start)}${r.project === '' ? '' : ` ${r.project}`}`, right, width)
+  return { left: line.slice(0, line.length - right.length), right }
 }
 
 /** The comparison with the period before: `vs last week: +$0.300 · +40k tok`. */

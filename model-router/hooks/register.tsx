@@ -23,7 +23,7 @@ import { MIN_CHARS, compress, familyOf, keepsSignal, rtkFilter } from './compres
 import { CACHE, PRICES_VERSION, PROFILE, addLedger, cacheHitRate, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, mainSaved, promptOf, requestCost, saved, savingsText, size, switchDelta, turnCost, usd, workerSaved } from './cost'
 import { estimateTokens, summarize } from './compact'
 import type { Cache, LedgerDelta, Profile, Target } from './cost'
-import { bar, compareLine, countLine, dayLabel, folderName, isEmptyDelta, ledgerSince, netLine, readHistoryText, serializeHistory, sessionDetail, sessionLine, shiftOffset, statsText, summarizePeriod, tokenParts, trim, upsert, usdParts } from './history'
+import { dayRow, folderName, isEmptyDelta, ledgerSince, paneWidth, readHistoryText, relativeName, serializeHistory, sessionDetail, sessionRow, shiftOffset, shortRange, signedUsd, sourcesLine, statsText, subLine, summarizePeriod, trim, upsert } from './history'
 import type { Period } from './history'
 import { WORKERS, crewSection, delegationHint, followUpHint, tierOfWorker, workerName, workerSpec, workerType } from './crew'
 import { STYLE, isStyle } from './style'
@@ -1404,13 +1404,14 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const v = await read($, statsView)
     // session · week · month: the live session, or the history file by calendar week (Mon–Sun) or month.
+    // Plain text tabs, the one shown at full strength; no hotkeys, so no badges on a desktop.
     const tabs = (
-      <Box flexDirection="row" gap={1}>
+      <Box flexDirection="row" gap={2}>
         {(['session', 'week', 'month'] as const).map(k => (
           <Button
             key={`view-${k}`}
             label={k}
-            hotkey={k[0]}
+            plain
             dimColor={v.view !== k}
             onPress={async () => {
               await update($, statsView, () => ({ view: k, offset: 0, open: null }))
@@ -1425,44 +1426,68 @@ export const register: Register = (on, options) => {
     )
     if (v.view !== 'session') {
       const kind = v.view
+      const width = paneWidth(e.props.bodyColumns)
       const s = summarizePeriod(await read($, history), kind, await $.clock.now(), v.offset)
       const move = (step: number) => async () => {
         const records = await read($, history)
         const at = await $.clock.now()
         await update($, statsView, x => ({ ...x, open: null, offset: shiftOffset(records, kind, at, x.offset, step) }))
       }
+      const meaning = (n: number) => (n < -0.0005 ? 'error' : n > 0.0005 ? 'success' : undefined)
       const widest = Math.max(0, ...s.days.map(d => Math.abs(d.usd)))
+      const days = s.days.filter(d => kind === 'week' || d.sessions > 0).map(d => ({ d, row: dayRow(d, widest, width) }))
+      const sources = sourcesLine(s.current.parts)
       const { best, worst, hidden } = trim(s.sessions, 12)
-      const row = (rec: SessionRecord) => [
-        <Button key={`session-${rec.id}`} plain onPress={() => update($, statsView, x => ({ ...x, open: x.open === rec.id ? null : rec.id }))}>
-          <Text color={saved(rec.ledger) < 0 ? 'yellow' : 'green'}>{`${v.open === rec.id ? '▾' : '▸'} ${sessionLine(rec)}`}</Text>
-        </Button>,
-        ...(v.open === rec.id ? sessionDetail(rec).map(line => <Text dimColor>{`  ${line}`}</Text>) : []),
-      ]
+      const row = (rec: SessionRecord) => {
+        const { left, right } = sessionRow(rec, width)
+        return [
+          <Button key={`session-${rec.id}`} plain onPress={() => update($, statsView, x => ({ ...x, open: x.open === rec.id ? null : rec.id }))}>
+            <Text mono>{left}</Text>
+            <Text mono tabular color={meaning(saved(rec.ledger))}>{right}</Text>
+          </Button>,
+          ...(v.open === rec.id ? sessionDetail(rec).map(line => <Text dimColor size="footnote">{`  ${line}`}</Text>) : []),
+        ]
+      }
+      const relative = relativeName(kind, v.offset)
       return (
         <Box flexDirection="column">
           {tabs}
-          <Box flexDirection="row" gap={1}>
-            <Button key="period-prev" label="←" hotkey="p" onPress={move(-1)} />
-            <Text bold>{s.label}</Text>
-            {v.offset < 0 && <Button key="period-next" label="→" hotkey="n" onPress={move(1)} />}
+          <Box flexDirection="row" gap={1} marginTop={1}>
+            <Button key="period-prev" label="‹" plain dimColor onPress={move(-1)} />
+            {relative !== '' && <Text weight="medium">{relative}</Text>}
+            <Text dimColor={relative !== ''}>{shortRange(kind, s.span)}</Text>
+            {v.offset < 0 && <Button key="period-next" label="›" plain dimColor onPress={move(1)} />}
           </Box>
-          <Text color={s.current.usd < 0 ? 'yellow' : 'green'}>{s.current.sessions === 0 ? 'net — · no sessions recorded' : netLine(s.current.usd, s.current.tokens)}</Text>
-          <Text dimColor>{countLine(s.current)}</Text>
-          <Text dimColor>{compareLine(s)}</Text>
-          {s.current.sessions > 0 && <Text dimColor>{usdParts(s.current.parts)}</Text>}
-          {s.current.sessions > 0 && <Text dimColor>{tokenParts(s.current.parts)}</Text>}
-          {s.days
-            .filter(d => kind === 'week' || d.sessions > 0)
-            .map(d => (
-              <Text color={d.sessions === 0 ? undefined : d.usd < 0 ? 'yellow' : 'green'} dimColor={d.sessions === 0}>
-                {d.sessions === 0 ? `${dayLabel(d.start)} —` : `${dayLabel(d.start)} ${bar(d.usd, widest, 10).padEnd(10)} ${netLine(d.usd, d.tokens).slice(4)}`}
-              </Text>
-            ))}
-          {s.sessions.length > 0 && <Text dimColor>sessions, best first · press one for its numbers</Text>}
-          {best.flatMap(row)}
-          {hidden > 0 && <Text dimColor>{`… ${hidden} more · /router stats ${kind}`}</Text>}
-          {worst.flatMap(row)}
+          <Box flexDirection="column" marginTop={1}>
+            <Text size="title" weight="semibold" tabular color={meaning(s.current.usd)} dimColor={s.current.sessions === 0}>
+              {s.current.sessions === 0 ? '—' : signedUsd(s.current.usd)}
+            </Text>
+            <Text dimColor wrap="truncate-end">{subLine(s)}</Text>
+            {sources !== '' && <Text dimColor size="footnote">{sources}</Text>}
+          </Box>
+          {s.current.sessions > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              {days.map(({ row: d }) =>
+                d.isEmpty ? (
+                  <Text mono dimColor>{`${d.label} ${d.bar}`}</Text>
+                ) : (
+                  <Box flexDirection="row">
+                    <Text mono dimColor>{`${d.label} `}</Text>
+                    <Text mono color={d.isLoss ? 'error' : 'success'}>{d.bar}</Text>
+                    <Text mono tabular>{` ${d.amount}`}</Text>
+                  </Box>
+                ),
+              )}
+            </Box>
+          )}
+          {s.sessions.length > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text dimColor size="caption">sessions, best first</Text>
+              {best.flatMap(row)}
+              {hidden > 0 && <Text dimColor size="caption">{`… ${hidden} more · /router stats ${kind}`}</Text>}
+              {worst.flatMap(row)}
+            </Box>
+          )}
         </Box>
       )
     }
