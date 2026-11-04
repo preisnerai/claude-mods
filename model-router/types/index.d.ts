@@ -70,6 +70,35 @@ export type Step = { requested: string; sent: string; actual: string; effort: st
 /** A prompt typed while a turn ran, routed when its own turn starts. */
 export type Queued = { text: string; tier: Tier | null; why?: string; nudge?: number }
 
+/**
+ * One session in the savings history (`history.jsonl`, one line each), rewritten as the session goes on.
+ * Dollars are stored as they were priced then, so a later price change never rewrites the past.
+ */
+export type SessionRecord = {
+  /** The record format. */
+  v: 1
+  /** The session id (the transcript file's name). */
+  id: string
+  /** When its first turn was recorded, and its last, in epoch milliseconds. */
+  start: number
+  end: number
+  /** The working folder's name, to tell sessions apart; never the full path. */
+  project: string
+  /** The session's own /model: what every saving of the session is measured against. */
+  model: string
+  mode: string
+  /** The price table the dollars were computed with (`hooks/cost.ts` PRICES_VERSION). */
+  prices: string
+  /** This session's share of the ledger: only what was billed while it ran. */
+  ledger: Ledger
+}
+
+/** What the pane shows: the live session, or a week or month of history (`offset` periods back). */
+export type StatsView = { view: 'session' | 'week' | 'month'; offset: number; open: string | null }
+
+/** The ledger as it stood when the history was last written: the next write adds only what came since. */
+export type HistoryMark = { last: Ledger }
+
 declare module 'claude-code' {
   interface PluginState {
     'model-router': {
@@ -133,6 +162,12 @@ declare module 'claude-code' {
       crewTask: { tier: ModelTier; worker: string } | null
       /** Crew: a hand-off hint given this turn, waiting for the orchestrator's spawn or SendMessage. */
       pendingHandoff: { tier: ModelTier; worker: string; address: string | null; prompt: string } | null
+      /** The savings history as last read from or written to `history.jsonl`: every session, this one included. */
+      history: SessionRecord[]
+      /** The ledger at the last history write; null until the session's first. */
+      historyMark: HistoryMark | null
+      /** The pane's view: live session, or a week or month of history. */
+      statsView: StatsView
     }
   }
 }

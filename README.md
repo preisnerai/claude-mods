@@ -22,6 +22,8 @@ A **Model router** pane (beside the chat in the desktop app) shows the current m
 
 `/router` shows what routing saved in dollars and how many tokens compression kept out of the context, for this session and all time.
 
+**Savings history.** Every session gets one line in `~/.claude/model-router/history.jsonl` (under `CLAUDE_CONFIG_DIR` when set), rewritten at the end of each turn and when the session ends, so a crash loses one turn at most. The pane's `session` · `week` · `month` buttons (hotkeys `s` `w` `m` while the pane has the focus) switch from the live session to a calendar week (Monday to Sunday) or month: the net in dollars and tokens, the comparison with the period before, the dollar sources the ledger keeps apart (main-loop routing, crew workers, the judge's cost) and the token sources (Bash compression, compaction), a bar per day, and every session ranked best to worst. `←` `→` (`p` `n`) step through earlier periods; press a session to see the numbers behind it (what it spent against what its own `/model` would have, turns per model, cache hit rate, the price table it was priced with). Losses count: a session or a day that cost more than your `/model` would have shows as a negative net, never left out. Dollars are stored as priced when the session ran (each record names its price table), so a later price change does not rewrite the past. A session counts in the period it started; `/clear` starts a new record. The file is plain JSON lines and stays on your machine; a line it cannot read is skipped, and the file as it was is kept as `history.jsonl.bad` before the next write. `/router stats [week|month] [n]` prints the same summary as text, `n` periods back.
+
 ## Install
 
 At the prompt of a Claude Code terminal session:
@@ -111,10 +113,13 @@ Tested live: two tasks for `worker-haiku` in one session started one worker, reu
 | `npm test` with 400 passing tests and 1 failure | the failure with its diff, the summary, `(400 passing test lines hidden)`: over 10× smaller |
 | `pnpm install`, `docker build`, `pip install` | progress bars and spinners gone, repeated warnings as one line `(×30)` |
 | `git push`, `git clone` | no `Counting/Compressing objects` lines |
+| `make`, `pip`/`uv`/`poetry`/`bundle`/`composer`/`brew` installs, `cargo`, `swift build`, `./gradlew`, `mvn`, `dotnet`, `xcodebuild`, `terraform`/`tofu`, `ansible-playbook`, `pre-commit`, `ping`, `docker build`, `mix compile` | the tool's own progress lines gone (`make[2]: Entering directory`, `Requirement already satisfied`, `> Task :app:x UP-TO-DATE`, `CompileSwift …`, `Refreshing state...`, `ok: [host]`), counted as `(N progress lines hidden)`; every command it ran, every result and every error stay. `dotnet test`'s `Passed …` lines count as passing tests |
 | a 2,000-line log | its head, its tail, and the error lines from the middle with the two lines after each (their location), up to 200 lines |
 | `cat`, `sed -n`, `head`, `grep`/`rg`, `git diff`/`show`/`log -p` (any spelling: `git -C dir`, `--no-pager`, `/bin/cat`, `bash -c`, `xargs cat`), `jq`, `curl`, `docker inspect`, `kubectl get` | **untouched**: file contents, diffs and data the model may quote back into an edit |
 
 Claude Code itself moves very large outputs to a file and shows a 2 KB preview; model-router works on the mid-size ones below that, which otherwise enter the context whole: typical test runs, installs and builds.
+
+The per-tool lines are matched only when that tool is in the command line (the same line from another command is data and stays), and they are counted in the savings and the history like the rest of the compression.
 
 Rules it never breaks: lines carrying an error are never dropped, folded or shortened; lines that only look alike are folded only in install and build logs; output under 1,200 characters is left alone; a result that would shrink by less than 10% once its note is added is passed through unchanged; and whatever a result no longer shows is saved whole under `~/.claude/model-router/tee/` (a ring of the last 200 compressed outputs), with the path in the output so the model can `grep` it.
 
@@ -122,9 +127,9 @@ With [rtk](https://github.com/rtk-ai/rtk) on your PATH, plain `cargo test`, `pyt
 
 ## Answer styles
 
-`terse` (default) adds one short section to the end of the system prompt: lead with the answer, no preamble or recap or closing offer, don't echo code back, batch shell commands, read the part of a file you need. It never shortens an explanation you asked for, and confirmations before destructive actions stay.
+`terse` (default) adds one short section to the end of the system prompt: lead with the answer, no preamble or recap or closing offer, don't echo code back, cut an announcing first sentence, "by the way" asides and hedges that carry nothing, batch shell commands, read the part of a file you need. The 5-item list cap shapes what is shown, never what is searched or read. It never shortens an explanation you asked for, options stay 2 to 4 ranked choices, and confirmations before destructive actions stay.
 
-`adhd` shapes answers for a reader with ADHD, adapted from [i-have-adhd](https://github.com/ayghri/i-have-adhd): next action first, numbered steps, one concrete next step, state restated each turn, real time estimates.
+`adhd` shapes answers for a reader with ADHD, adapted from [i-have-adhd](https://github.com/ayghri/i-have-adhd): next action first, numbered steps, one concrete next step, state restated each turn (in the task tool when there is one), real time estimates, mid-work questions answered rather than deferred, and a check that the first line says what to do next and the last what just happened.
 
 `off` leaves the system prompt alone. Switch with `/router style terse|adhd|off`. A change rewrites the system prompt once, so that one request re-reads the conversation uncached.
 
@@ -141,6 +146,7 @@ With [rtk](https://github.com/rtk-ai/rtk) on your PATH, plain `cargo test`, `pyt
 | `/router-effort [auto\|task\|fixed]` | show the effort policy; set the mode for this session |
 | `/router-ultracode [suggest\|auto\|off]` | show or set the Ultracode switch for this session |
 | `/router-cache` | cache hit rate, cache reads/writes and the warm entries with their age |
+| `/router-stats [week\|month] [n]` | savings history: net dollars and tokens, the period before, sources, days and every session best to worst; `n` periods back |
 | `/router-budget [usd\|off]` | show or set a session budget; warns at 80%, can downgrade one tier at 100% |
 | `/router-compact [on\|off\|now]` | auto-compact the session with the cheap model at the tier threshold |
 | `/router-log` | the last 50 routing decisions as JSON lines, for tuning |
@@ -149,7 +155,7 @@ With [rtk](https://github.com/rtk-ai/rtk) on your PATH, plain `cargo test`, `pyt
 | `/router-off` · `/router-on` | stop or resume routing (or crew) for this session |
 | `/router-reset` | clear all-time totals, learned turn profiles, learned corrections and the decision log |
 
-The `/router <sub>` forms (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router cache`, `/router budget …`, `/router compact …`, `/router start`, `/router help`) work too.
+The `/router <sub>` forms (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router cache`, `/router stats …`, `/router budget …`, `/router compact …`, `/router start`, `/router help`) work too.
 
 `/router-cache` shows whether the cache is warm and for how long, so a low hit rate or a string of cold starts is visible instead of guessed. `/router-budget` is a session guard measured from the router's list-price ledger: at 80% it warns, at 100% `budgetAction: warn` only warns and `downgrade` moves the next task one tier down. It never overrides a forced `!tier` prompt.
 
@@ -216,8 +222,8 @@ To make your own mod findable: add the `claude-mod` topic and a `.claude-plugin/
 ## Credits
 
 - [laya-router](https://github.com/marcreichel/laya-router) by Marc Reichel (MIT): the idea of routing on a classifier and the cost of switching mid-session, `/model` taking precedence, stuck detection, the calibration log, and the laya-serve tier descriptions this mod reuses.
-- [rtk](https://github.com/rtk-ai/rtk) by rtk-ai: the output-compression strategies reimplemented here, and the binary this mod calls when it is installed. No rtk code is included.
-- [i-have-adhd](https://github.com/ayghri/i-have-adhd) by Ayoub Ghriss (MIT): the rules behind the `adhd` style.
+- [rtk](https://github.com/rtk-ai/rtk) by rtk-ai (Apache-2.0 CLI and filters): the output-compression strategies reimplemented here, including the idea of per-tool progress filters (its `src/filters`), and the binary this mod calls when it is installed. No rtk code is included; rtk's BUSL-licensed engine and proxy were not used.
+- [i-have-adhd](https://github.com/ayghri/i-have-adhd) by Ayoub Ghriss (MIT): the rules behind the `adhd` style, and the pre-send check and list-cap caveat the `terse` style borrows.
 - [haiku-compact](https://github.com/kjhq/haiku-compact) (MIT): the compaction pattern this mod adapts — summarize the session with Haiku through the `session.compact` hook, keep the recent tail word for word, never fall back to an expensive-model compaction when the summary fails.
 
 ## Develop

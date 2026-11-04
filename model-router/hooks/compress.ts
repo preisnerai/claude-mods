@@ -115,8 +115,52 @@ const NOISE = [
   /^[0-9a-f]{12}: (Pulling fs layer|Waiting|Downloading|Verifying Checksum|Download complete|Extracting|Pull complete|Already exists)/,
 ]
 
+// Lines one tool prints about its own progress (rtk's per-command filters, reimplemented): the step it is on,
+// a package it fetched or already had, a directory it entered. Dropped only when that tool is in the command,
+// never when the line carries a signal, and counted in the note. Results (installed, built, plan) stay.
+const CHATTER: [RegExp, RegExp[]][] = [
+  [/^g?make\b/, [/^g?make(\[\d+\])?: (Entering|Leaving) directory\b/]],
+  [
+    /^(pip3?|python3?\s+-m\s+pip)\s+install\b/,
+    [/^\s*Requirement already satisfied: /, /^\s*(Collecting|Downloading|Using cached|Obtaining) \S/, /^\s*(Stored in directory|Created wheel for) /, /^\s*Preparing metadata \(/],
+  ],
+  [/^uv\s+(sync|add|pip\s+install|lock)\b/, [/^\s+(Downloading|Using cached|Preparing|Building|Built) \S/]],
+  [/^poetry\s+(install|add|update|lock)\b/, [/^\s+[-•] Downloading /]],
+  [/^bundle\s+(install|update)\b/, [/^Using \S+ \S+/, /^Fetching gem metadata from /, /^Resolving dependencies\.\.\.$/]],
+  [/^composer\s+(install|update|require)\b/, [/^\s+- Downloading /, /^Loading composer repositories/]],
+  [/^brew\s+(install|upgrade|reinstall)\b/, [/^==> (Downloading|Fetching|Pouring) /, /^Already downloaded: /]],
+  [/^cargo\s+(build|check|run|install|clippy|test|nextest|bench|doc)\b/, [/^\s*(Compiling|Checking|Fresh|Downloaded|Downloading|Locking|Adding|Documenting) \S+ v\d/, /^\s*Updating crates\.io index$/]],
+  [/^swift\s+(build|test|run)\b/, [/^\[\d+\/\d+\] (Compiling|Linking|Emitting|Write|Planning|Building|Copying|Applying) /]],
+  [/^(gradlew?|\.\/gradlew)\b/, [/^> Task :\S+( (UP-TO-DATE|NO-SOURCE|FROM-CACHE|SKIPPED))?$/]],
+  [/^mvnw?\b/, [/^(\[INFO\] )?Download(ing|ed) from \S+: /, /^Progress \(\d+\): /]],
+  [/^dotnet\s+(build|test|restore|run|publish)\b/, [/^\s*Determining projects to restore\.\.\.$/, /^\s*All projects are up-to-date for restore\.$/]],
+  [
+    /^xcodebuild\b/,
+    [
+      /^(CompileC|CompileSwift|CompileSwiftSources|SwiftCompile|SwiftDriver|SwiftEmitModule|SwiftMergeGeneratedHeaders|Ld|MkDir|CreateBuildDirectory|ProcessInfoPlistFile|CopySwiftLibs|CodeSign|Touch|PhaseScriptExecution|PBXCp|CpResource|CpHeader|Ditto|RegisterWithLaunchServices|Validate|ProcessProductPackaging|GenerateDSYMFile|CompileAssetCatalog|CompileStoryboard|LinkStoryboards|SetMode|SetOwnerAndGroup|WriteAuxiliaryFile|RegisterExecutionPolicyException) /,
+      /^\s+cd \S/,
+      /^\s+export \w+=/,
+      /^\s+builtin-/,
+    ],
+  ],
+  [/^(terraform|tofu)\s+(plan|apply|init|refresh|destroy)\b/, [/^\S+: Refreshing state\.\.\./, /^(Acquiring|Releasing) state lock\b/, /^- (Downloading|Installing|Using previously-installed|Reusing previous version of|Finding) /]],
+  [/^ansible-playbook\b/, [/^(ok|skipping): \[/]],
+  [/^pre-commit\b/, [/^\[INFO\] (Installing environment for|Once installed this environment will be reused|This may take a few minutes)/]],
+  [/^ping\b/, [/^\d+ bytes from /, /^Reply from \S+: bytes=/]],
+  [/^(docker\s+(buildx\s+)?build|docker\s+compose\s+build)\b/, [/^#\d+ (DONE [\d.]+s|CACHED)$/]],
+  [/^mix\s+compile\b/, [/^Compiling \d+ files? \(\.ex\)$/, /^Generated \S+ app$/]],
+  [/^(npm|npx)\b/, [/^npm notice\b/]],
+]
+
+/** The progress lines of the tools a command line runs. */
+export function chatterFor(command: string): RegExp[] {
+  const parts = segments(command)
+  return CHATTER.filter(([tool]) => parts.some(s => tool.test(s))).flatMap(([, lines]) => lines)
+}
+
 // One passing test, in test output: counted, not shown. Suite headers stay, so later output keeps its place.
 const PASSING = [
+  /^\s*Passed\s+\S.*\[\s*[\d.]+\s*m?s\]\s*$/, // dotnet test --logger console
   /^\s*(✓|✔|√|☑)\s/,
   /^\s*ok\s+\d+\b/, // TAP
   /^ok\s+\S+\s+[\d.]+s\s*$/, // go test, a package with nothing more to say
@@ -145,12 +189,14 @@ function shape(line: string): string {
 }
 
 /** Shrinks one Bash result. Returns the input unchanged when it would save under 10%. */
-export function compress(raw: string, family: Family, options: { allowCut: boolean }): Compressed {
+export function compress(raw: string, family: Family, options: { allowCut: boolean; command?: string }): Compressed {
   if (raw.length < MIN_CHARS) {
     return { text: raw, hidden: 0 }
   }
   let hidden = 0
   let passing = 0
+  let progress = 0
+  const chatter = options.command === undefined ? [] : chatterFor(options.command)
 
   // 1. Terminal control: colors gone, a redrawn line kept as its last state.
   let lines = raw
@@ -169,6 +215,10 @@ export function compress(raw: string, family: Family, options: { allowCut: boole
     }
     if (family === 'test' && PASSING.some(p => p.test(l))) {
       passing++
+      return false
+    }
+    if (chatter.some(p => p.test(l))) {
+      progress++
       return false
     }
     return true
@@ -238,6 +288,10 @@ export function compress(raw: string, family: Family, options: { allowCut: boole
   if (passing > 0) {
     lines.push(`(${passing} passing test lines hidden)`)
     hidden += passing
+  }
+  if (progress > 0) {
+    lines.push(`(${progress} progress lines hidden)`)
+    hidden += progress
   }
 
   const text = lines.join('\n').trim()

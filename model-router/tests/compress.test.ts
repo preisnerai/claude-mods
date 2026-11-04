@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { MIN_CHARS, compress, familyOf, keepsSignal, rtkFilter, segments } from '../hooks/compress'
+import { MIN_CHARS, chatterFor, compress, familyOf, keepsSignal, rtkFilter, segments } from '../hooks/compress'
 
 test('commands are read segment by segment, without env, sudo or time', async () => {
   expect(segments('cd app && FOO=1 sudo npm test | tee out.log')).toEqual(['cd app', 'npm test', 'tee out.log'])
@@ -179,4 +179,77 @@ test('an rtk summary that lost the failures is refused', async () => {
   expect(keepsSignal('FAILED tests/a.py::test_x - assert 1 == 2', 'Pytest: No tests collected')).toBe(false)
   expect(keepsSignal('FAILED tests/a.py::test_x - assert 1 == 2', 'pytest: 1 failed\n  test_x: assert 1 == 2')).toBe(true)
   expect(keepsSignal('collected 3 items\n3 passed', 'pytest: 3 passed')).toBe(true)
+})
+
+// Per-tool progress lines, after rtk's command filters: dropped only when that tool runs, counted in the note.
+
+test('a tool\'s own progress lines go only when that tool is in the command', async () => {
+  expect(chatterFor('make -j8 all').length > 0).toBe(true)
+  expect(chatterFor('cd ios && xcodebuild -scheme App build').length > 0).toBe(true)
+  expect(chatterFor('./gradlew assembleDebug').length > 0).toBe(true)
+  expect(chatterFor('ls -la')).toEqual([])
+  expect(chatterFor('echo make')).toEqual([])
+})
+
+test('make keeps its commands and errors, not the directories it walks', async () => {
+  const raw = [
+    ...Array.from({ length: 40 }, (_, i) => [`make[2]: Entering directory '/src/mod${i}'`, `cc -O2 -c mod${i}.c -o mod${i}.o`, `make[2]: Leaving directory '/src/mod${i}'`]).flat(),
+    "mod7.c:12:3: error: 'foo' undeclared",
+    "make[1]: *** [Makefile:20: mod7.o] Error 1",
+  ].join('\n')
+  const { text, hidden } = compress(raw, familyOf('make all') ?? 'generic', { allowCut: true, command: 'make all' })
+  expect(text).not.toContain('Entering directory')
+  expect(text).toContain('cc -O2 -c mod39.c -o mod39.o')
+  expect(text).toContain("mod7.c:12:3: error: 'foo' undeclared")
+  expect(text).toContain('make[1]: *** [Makefile:20: mod7.o] Error 1')
+  expect(text).toContain('(80 progress lines hidden)')
+  expect(hidden).toBe(80)
+  // Without the command, the same lines are someone else's data: they stay.
+  expect(compress(raw, 'generic', { allowCut: true }).text).toContain('Entering directory')
+})
+
+test('pip drops what it already had and fetched, never a failed requirement', async () => {
+  const raw = [
+    ...Array.from({ length: 30 }, (_, i) => `Requirement already satisfied: pkg${i}>=1.0 in ./venv/lib/python3.12/site-packages (from app==0.1) (1.${i}.0)`),
+    'Collecting requests==2.32.3',
+    '  Using cached requests-2.32.3-py3-none-any.whl (64 kB)',
+    'ERROR: Could not find a version that satisfies the requirement nopkg==9.9',
+    'Successfully installed requests-2.32.3',
+  ].join('\n')
+  const { text } = compress(raw, 'install', { allowCut: true, command: 'pip install -r requirements.txt' })
+  expect(text).not.toContain('Requirement already satisfied')
+  expect(text).not.toContain('Using cached')
+  expect(text).toContain('ERROR: Could not find a version that satisfies the requirement nopkg==9.9')
+  expect(text).toContain('Successfully installed requests-2.32.3')
+})
+
+test('xcodebuild and gradle keep their results, not every build step', async () => {
+  const xcode = [
+    ...Array.from({ length: 30 }, (_, i) => [`CompileSwift normal arm64 /app/Sources/File${i}.swift (in target 'App' from project 'App')`, '    cd /app', `    builtin-swiftTaskExecution -- /Applications/Xcode.app/swift-frontend -c File${i}.swift`]).flat(),
+    "/app/Sources/File3.swift:9:5: error: cannot find 'bar' in scope",
+    '** BUILD FAILED **',
+  ].join('\n')
+  const x = compress(xcode, 'generic', { allowCut: true, command: 'xcodebuild -scheme App build' }).text
+  expect(x.split('\n').filter(l => l.startsWith('CompileSwift'))).toEqual([])
+  expect(x).toContain("File3.swift:9:5: error: cannot find 'bar' in scope")
+  expect(x).toContain('** BUILD FAILED **')
+
+  const gradle = [...Array.from({ length: 60 }, (_, i) => `> Task :app:task${i} UP-TO-DATE`), '> Task :app:compileKotlin FAILED', 'BUILD FAILED in 4s'].join('\n')
+  const g = compress(gradle, 'generic', { allowCut: true, command: './gradlew build' }).text
+  expect(g).toBe('> Task :app:compileKotlin FAILED\nBUILD FAILED in 4s\n(60 progress lines hidden)')
+})
+
+test('passing dotnet tests are counted like passing tests, failures and their messages stay', async () => {
+  const raw = [
+    ...Array.from({ length: 60 }, (_, i) => `  Passed AppTests.Feature.Case${i} [3 ms]`),
+    '  Failed AppTests.Auth.RejectsBadToken [12 ms]',
+    '  Error Message:',
+    '   Assert.Equal() Failure: Expected 401, Actual 200',
+    'Failed!  - Failed:     1, Passed:    60, Skipped:     0, Total:    61',
+  ].join('\n')
+  const { text } = compress(raw, familyOf('dotnet test') ?? 'generic', { allowCut: true, command: 'dotnet test' })
+  expect(text).not.toContain('Passed AppTests.Feature.Case0')
+  expect(text).toContain('Failed AppTests.Auth.RejectsBadToken [12 ms]')
+  expect(text).toContain('Assert.Equal() Failure: Expected 401, Actual 200')
+  expect(text).toContain('(60 passing test lines hidden)')
 })

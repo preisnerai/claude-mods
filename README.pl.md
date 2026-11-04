@@ -8,7 +8,7 @@
 |---|---|---|
 | 🔀 **Routing** | Każdy prompt idzie do Haiku, Sonneta albo Opusa, zależnie od tego, czego wymaga. Lokalne reguły po polsku i angielsku rozpoznają jasne prompty bez wywołania modelu; tylko niejasne trafiają do sędziego Haiku (ok. $0.0001 za prompt). | Mniej tokenów Opusa |
 | 🧮 **Rachunek cache** | Zmiana modelu wyrzuca prompt cache: następne zapytanie czyta całą rozmowę od nowa po cenie zapisu. Przed każdym zejściem na tańszy model router wycenia turę na obu modelach przy Twoim rozmiarze kontekstu i stanie cache, i schodzi tylko wtedy, gdy to się opłaca. | Żadne zejście na tańszy model nie kosztuje więcej, niż oszczędza |
-| 🗜️ **Kompresja** | Wyjście Basha kurczy się, zanim trafi do rozmowy, w stylu rtk: bez pasków postępu i zaliczonych testów, identyczne powtórzenia zwinięte w licznik, każda linia z błędem zachowana. Zawartość plików, diffy i dane przechodzą nietknięte. Pełne wyjście zostaje na dysku (`~/.claude/model-router/tee/`, ostatnie 200). Z zainstalowanym [rtk](https://github.com/rtk-ai/rtk) zwykłe uruchomienia `cargo test`, `pytest`, `tsc`, `mypy` i `go build` idą przez `rtk pipe`; podsumowanie, które gubi błędy, jest odrzucane. | Mniej wejścia w każdym kolejnym zapytaniu |
+| 🗜️ **Kompresja** | Wyjście Basha kurczy się, zanim trafi do rozmowy, w stylu rtk: bez pasków postępu i zaliczonych testów, identyczne powtórzenia zwinięte w licznik, każda linia z błędem zachowana. Zawartość plików, diffy i dane przechodzą nietknięte. Pełne wyjście zostaje na dysku (`~/.claude/model-router/tee/`, ostatnie 200). Linie postępu konkretnych narzędzi (`make`, instalatory pip/uv/poetry/bundle/composer/brew, `cargo`, `gradlew`, `mvn`, `dotnet`, `xcodebuild`, `terraform`, `ansible-playbook` i inne) znikają tylko, gdy to narzędzie jest w poleceniu, i są liczone jako `(N progress lines hidden)`. Z zainstalowanym [rtk](https://github.com/rtk-ai/rtk) zwykłe uruchomienia `cargo test`, `pytest`, `tsc`, `mypy` i `go build` idą przez `rtk pipe`; podsumowanie, które gubi błędy, jest odrzucane. | Mniej wejścia w każdym kolejnym zapytaniu |
 | ✂️ **Krócej** | Jedna krótka sekcja promptu systemowego: bez wstępów, podsumowań i formułek na koniec, komendy w jednym wywołaniu, czytanie fragmentów plików. Tryb `adhd` zaczyna od następnej akcji, wg [i-have-adhd](https://github.com/ayghri/i-have-adhd). | Mniej tokenów wyjściowych, które kosztują 5× więcej niż wejściowe |
 
 Panel **Model router** (w aplikacji desktopowej obok rozmowy) pokazuje na żywo bieżący model, oszczędność i tury na model.
@@ -90,6 +90,7 @@ Przetestowane na żywo: dwa zadania dla `worker-haiku` w jednej sesji uruchomił
 | `/router-effort [auto\|task\|fixed]` | pokazuje politykę effortu; ustawia tryb w tej sesji |
 | `/router-ultracode [suggest\|auto\|off]` | pokazuje lub ustawia przełącznik Ultracode w tej sesji |
 | `/router-cache` | trafienia cache, odczyty/zapisy i ciepłe wpisy z wiekiem |
+| `/router-stats [week\|month] [n]` | historia oszczędności: wynik netto w dolarach i tokenach, porównanie z poprzednim okresem, źródła, dni i każda sesja od najlepszej do najgorszej; `n` okresów wstecz |
 | `/router-budget [usd\|off]` | budżet sesji; ostrzega przy 80%, przy 100% może zejść o tier |
 | `/router-compact [on\|off\|now]` | auto-kompakt sesji tanim modelem przy progu danego tieru |
 | `/router-log` | ostatnie 50 decyzji jako JSON, do strojenia |
@@ -98,7 +99,9 @@ Przetestowane na żywo: dwa zadania dla `worker-haiku` w jednej sesji uruchomił
 | `/router-off` · `/router-on` | wyłącz lub włącz routing w tej sesji |
 | `/router-reset` | wyczyść sumy, wyuczone profile tur, wyuczone korekty i log decyzji |
 
-Formy `/router <sub>` (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router cache`, `/router budget …`, `/router compact …`, `/router start`, `/router help`) też działają.
+Formy `/router <sub>` (`/router why`, `/router log`, `/router off`, `/router on`, `/router style …`, `/router effort …`, `/router ultracode …`, `/router cache`, `/router stats …`, `/router budget …`, `/router compact …`, `/router start`, `/router help`) też działają.
+
+**Historia oszczędności.** Każda sesja ma jedną linię w `~/.claude/model-router/history.jsonl` (albo w `CLAUDE_CONFIG_DIR`), aktualizowaną na końcu każdej tury i sesji. W panelu przyciski `session` · `week` · `month` (`s` `w` `m`) przełączają na tydzień kalendarzowy (pon–niedz) lub miesiąc: wynik netto, porównanie z poprzednim okresem, źródła (routing, workery crew, koszt sędziego; tokeny z kompresji i kompaktowania), słupek na dzień i sesje od najlepszej do najgorszej; `←` `→` (`p` `n`) cofają okres, kliknięcie sesji pokazuje liczby za nią. Straty też się liczą: sesja droższa niż Twój `/model` ma ujemny wynik. Dolary są zapisane po cenach z chwili sesji (rekord zna wersję cennika). `/router stats [week|month] [n]` daje to samo jako tekst.
 
 `/router-cache` pokazuje, czy cache jest ciepły i jak długo, więc niski hit rate albo seria zimnych startów jest widoczna, a nie zgadywana. `/router-budget` to budżet sesji liczony z list-price leadgera routera: przy 80% ostrzega, przy 100% `budgetAction: warn` tylko ostrzega, a `downgrade` schodzi o jeden tier w następnym zadaniu. Nie nadpisze wymuszonego `!tier`.
 
