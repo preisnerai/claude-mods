@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { CACHE, PROFILE, addLedger, cacheHitRate, cacheKey, dollars, emptyLedger, learn, mainSaved, priceOf, requestCost, saved, savingsText, size, switchDelta, turnCost, usd, workerSaved } from '../hooks/cost'
+import { CACHE, PROFILE, addLedger, cacheHitRate, cacheKey, dollars, emptyLedger, isUpgrade, learn, mainSaved, moneyText, net, priceOf, requestCost, requestDelta, saved, savingsText, size, switchDelta, turnCost, upgradeText, upgradeUsd, usd, workerSaved, workerUpgradeUsd } from '../hooks/cost'
 
 function near(actual: number | undefined, expected: number) {
   expect({ actual, near: Math.abs((actual ?? NaN) - expected) < 1e-9 }).toEqual({ actual, near: true })
@@ -129,4 +129,35 @@ test('the ledger splits the workers from the main loop, and an older stored ledg
   const grown = addLedger(old as never, { workerSteps: 1, workerActualUsd: 0.02 })
   expect(grown.workerSteps).toBe(1)
   near(grown.workerActualUsd, 0.02)
+})
+
+test('a request on a stronger family than the session is an upgrade, kept out of the saving', () => {
+  expect([isUpgrade('claude-opus-5-5', 'claude-haiku-5-5'), isUpgrade('claude-haiku-5-5', 'claude-sonnet-5-5'), isUpgrade('claude-sonnet-5-5', 'claude-sonnet-5-5[1m]'), isUpgrade('gpt-9', 'claude-haiku-5-5')]).toEqual([true, false, false, false])
+  // A Haiku session: the main loop on Sonnet costs 0.50 instead of 0.10, a Haiku worker 0.01 as on Haiku.
+  let l = addLedger(emptyLedger(), requestDelta('claude-sonnet-5-5', 'claude-haiku-5-5', 0.5, 0.1))
+  l = addLedger(l, requestDelta('claude-haiku-5-5', 'claude-haiku-5-5', 0.01, 0.01, true))
+  near(net(l), -0.4)
+  near(upgradeUsd(l), 0.4)
+  near(saved(l), 0)
+  expect(l.upgradeSteps).toBe(1)
+  expect(moneyText(l, 'Haiku')).toBe('quality +$0.400 over your Haiku')
+  expect(moneyText(l, 'Haiku')).not.toContain('extra')
+})
+
+test('a Sonnet session saves on its Haiku worker and pays apart for its Opus worker', () => {
+  let l = addLedger(emptyLedger(), requestDelta('claude-haiku-5-5', 'claude-sonnet-5-5', 0.02, 0.3, true))
+  l = addLedger(l, requestDelta('claude-opus-5-5', 'claude-sonnet-5-5', 0.6, 0.3, true))
+  near(saved(l), 0.28)
+  near(workerSaved(l), 0.28)
+  near(workerUpgradeUsd(l), 0.3)
+  near(mainSaved(l), 0)
+  expect(moneyText(l, 'Sonnet')).toBe('saved ≈$0.280 · quality +$0.300 over your Sonnet')
+  expect(upgradeText(0, 'Sonnet')).toBe('')
+})
+
+test('a ledger stored before upgrades were split adds up as before', () => {
+  const { upgradeSteps: _a, upgradeActualUsd: _b, upgradeBaselineUsd: _c, workerUpgradeActualUsd: _d, workerUpgradeBaselineUsd: _e, ...old } = emptyLedger()
+  const l = addLedger({ ...old, actualUsd: 0.5, baselineUsd: 0.1 } as never, {})
+  near(saved(l), -0.4)
+  expect(savingsText(saved(l), 'Haiku')).toBe('extra ≈$0.400 vs your Haiku')
 })

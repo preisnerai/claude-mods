@@ -1,5 +1,5 @@
 import type { Ledger, SessionRecord, Tier } from '../types'
-import { addLedger, dollars, emptyLedger, saved, size, workerSaved } from './cost'
+import { addLedger, dollars, emptyLedger, saved, size, upgradeUsd, workerSaved } from './cost'
 import type { LedgerDelta } from './cost'
 
 // The savings history: one record per session, kept in `history.jsonl` beside the decision log. Everything here
@@ -25,6 +25,27 @@ const EPSILON = 1e-12
 export function fullLedger(l: Partial<Ledger> | undefined): Ledger {
   const empty = emptyLedger()
   return { ...empty, ...l, turns: { ...empty.turns, ...l?.turns } }
+}
+
+/**
+ * A record written before upgrades were kept apart (no `upgradeActualUsd`): on a Haiku session nothing runs
+ * cheaper than the session's own model, so every dollar over its baseline was paid for a stronger model. That
+ * part moves to the upgrade fields, and the session no longer reads as a loss. Other sessions mixed steps up and
+ * down, which the old ledger cannot tell apart: they stay as they were.
+ */
+export function migrateLedger(raw: Partial<Ledger> | undefined, model: string): Ledger {
+  const l = fullLedger(raw)
+  if (raw === undefined || 'upgradeActualUsd' in raw || modelName(model) !== 'Haiku') {
+    return l
+  }
+  return {
+    ...l,
+    upgradeSteps: l.routedSteps,
+    upgradeActualUsd: l.actualUsd,
+    upgradeBaselineUsd: l.baselineUsd,
+    workerUpgradeActualUsd: l.workerActualUsd,
+    workerUpgradeBaselineUsd: l.workerBaselineUsd,
+  }
 }
 
 /**
@@ -121,7 +142,7 @@ export function readHistoryText(text: string): { records: SessionRecord[]; skipp
         model: typeof row.model === 'string' ? row.model : '',
         mode: typeof row.mode === 'string' ? row.mode : '',
         prices: typeof row.prices === 'string' ? row.prices : '',
-        ledger: fullLedger(row.ledger),
+        ledger: migrateLedger(row.ledger, typeof row.model === 'string' ? row.model : ''),
       })
     }
   }
@@ -185,19 +206,25 @@ export function periodLabel(kind: Period, span: Span, offset: number): string {
 /**
  * Where a saving came from, as the ledger keeps it apart: dollars from routing the main loop, from crew workers,
  * minus the judge's calls (they add up to `saved`), and tokens kept out by Bash compression and by compaction.
+ * `upgrade` is not part of the saving: what was paid on purpose for stronger models than the session's own.
  */
-export type Parts = { routing: number; workers: number; judge: number; compression: number; compaction: number }
+export type Parts = { routing: number; workers: number; judge: number; compression: number; compaction: number; upgrade: number }
 
 export function partsOf(l: Ledger): Parts {
   const workers = workerSaved(l)
-  const routing = l.baselineUsd - l.actualUsd - workers
+  const routing = saved(l) + l.judgeUsd - workers
   const compression = Math.min(l.tokensSaved, Math.max(0, Math.round((l.rawChars - l.keptChars) / 4)))
-  return { routing, workers, judge: -l.judgeUsd, compression, compaction: Math.max(0, l.tokensSaved - compression) }
+  return { routing, workers, judge: -l.judgeUsd, compression, compaction: Math.max(0, l.tokensSaved - compression), upgrade: upgradeUsd(l) }
 }
 
-/** A session's net saving in dollars: negative when routing cost more than its own model would have. */
+/** A session's saving in dollars, upgrades left out: negative when routing down cost more than its own model would have. */
 export function recordUsd(r: SessionRecord): number {
   return saved(r.ledger)
+}
+
+/** What a session paid on purpose for stronger models than its own. */
+export function recordUpgrade(r: SessionRecord): number {
+  return upgradeUsd(r.ledger)
 }
 
 export function recordTokens(r: SessionRecord): number {
@@ -217,12 +244,14 @@ export type Totals = {
   tokens: number
   actualUsd: number
   baselineUsd: number
+  /** Paid for stronger models than each session's own: not a loss, not in `usd`. */
+  upgradeUsd: number
   parts: Parts
 }
 
 /** Every session counted, the ones that cost more included. */
 export function totals(records: SessionRecord[]): Totals {
-  const sum: Totals = { sessions: 0, costlier: 0, usd: 0, tokens: 0, actualUsd: 0, baselineUsd: 0, parts: { routing: 0, workers: 0, judge: 0, compression: 0, compaction: 0 } }
+  const sum: Totals = { sessions: 0, costlier: 0, usd: 0, tokens: 0, actualUsd: 0, baselineUsd: 0, upgradeUsd: 0, parts: { routing: 0, workers: 0, judge: 0, compression: 0, compaction: 0, upgrade: 0 } }
   for (const r of records) {
     const usd = recordUsd(r)
     const p = partsOf(r.ledger)
@@ -232,12 +261,14 @@ export function totals(records: SessionRecord[]): Totals {
     sum.tokens += recordTokens(r)
     sum.actualUsd += r.ledger.actualUsd + r.ledger.judgeUsd
     sum.baselineUsd += r.ledger.baselineUsd
+    sum.upgradeUsd += p.upgrade
     sum.parts = {
       routing: sum.parts.routing + p.routing,
       workers: sum.parts.workers + p.workers,
       judge: sum.parts.judge + p.judge,
       compression: sum.parts.compression + p.compression,
       compaction: sum.parts.compaction + p.compaction,
+      upgrade: sum.parts.upgrade + p.upgrade,
     }
   }
   return sum
@@ -348,9 +379,9 @@ export function netLine(usd: number, tokens: number): string {
   return `net ${signedUsd(usd)} · ≈${size(tokens)} tok`
 }
 
-/** `routing +$1.50 · crew +$0.200 · judge -$0.010`, the dollar sources that add up to the net. */
+/** `routing +$1.50 · crew +$0.200 · judge -$0.010`, the dollar sources that add up to the saving, then any upgrade. */
 export function usdParts(p: Parts): string {
-  return [`routing ${signedUsd(p.routing)}`, `crew ${signedUsd(p.workers)}`, `judge ${signedUsd(p.judge)}`].join(' · ')
+  return [`routing ${signedUsd(p.routing)}`, `crew ${signedUsd(p.workers)}`, `judge ${signedUsd(p.judge)}`, ...(p.upgrade >= 0.0005 ? [`quality ↑${dollars(p.upgrade)}`] : [])].join(' · ')
 }
 
 /** `compression ≈120k · compaction ≈62k tok`, the token sources. */
@@ -376,6 +407,7 @@ export function sessionDetail(r: SessionRecord): string[] {
     `${stamp(r.start)} → ${stamp(r.end).replace(`${day(r.start)} `, '')} · vs ${modelName(r.model)}`,
     `spent ${dollars(l.actualUsd + l.judgeUsd)} instead of ${dollars(l.baselineUsd)}`,
     ...(sources === '' ? [] : [sources]),
+    ...(upgradeUsd(l) >= 0.0005 ? [`quality ↑ = stronger models than your ${modelName(r.model)}, not a loss`] : []),
     [turns === '' ? '' : `turns ${turns}`, requests === 0 ? '' : `cache ${Math.round((l.cacheHits / requests) * 100)}%`].filter(Boolean).join(' · '),
     `prices ${r.prices || '?'} · ${r.id.slice(0, 8)}`,
   ].filter(Boolean)
@@ -399,7 +431,8 @@ export function fit(left: string, right: string, width: number): string {
 export function sourcesLine(p: Parts): string {
   const usd = ([['routing', p.routing], ['crew', p.workers], ['judge', p.judge]] as const).filter(([, n]) => Math.abs(n) >= 0.0005).map(([name, n]) => `${name} ${signedUsd(n)}`)
   const tok = ([['compressed', p.compression], ['compacted', p.compaction]] as const).filter(([, n]) => n > 0).map(([name, n]) => `≈${size(n)} tok ${name}`)
-  return [...usd, ...tok].join(' · ')
+  const up = p.upgrade >= 0.0005 ? [`quality ↑${dollars(p.upgrade)}`] : []
+  return [...usd, ...up, ...tok].join(' · ')
 }
 
 /** The period in a few cells: `Nov 2 – 8`, `Oct 26 – Nov 1`, `Oct 2026`. */
@@ -427,6 +460,7 @@ export function subLine(s: Summary): string {
   return [
     `${t.sessions} session${t.sessions === 1 ? '' : 's'}`,
     t.costlier > 0 ? `${t.costlier} cost more` : '',
+    t.upgradeUsd >= 0.0005 ? `quality ↑${dollars(t.upgradeUsd)}` : '',
     t.tokens > 0 ? `≈${size(t.tokens)} tok` : '',
     s.previous.sessions > 0 ? `vs ${before} ${signedUsd(t.usd - s.previous.usd)}` : '',
   ].filter(Boolean).join(' · ')
@@ -449,7 +483,8 @@ export function dayRow(d: Day, widest: number, width: number): DayRow {
 /** One session as the pane lists it: `Nov 4 10:00 my-app` on the left, its net (and tokens) on the right. */
 export function sessionRow(r: SessionRecord, width: number): { left: string; right: string } {
   const tokens = recordTokens(r)
-  const right = `${tokens > 0 ? `≈${size(tokens)} ` : ''}${signedUsd(recordUsd(r))}`
+  const up = recordUpgrade(r)
+  const right = `${tokens > 0 ? `≈${size(tokens)} ` : ''}${signedUsd(recordUsd(r))}${up >= 0.0005 ? ` ↑${dollars(up)}` : ''}`
   const line = fit(`${stamp(r.start)}${r.project === '' ? '' : ` ${r.project}`}`, right, width)
   return { left: line.slice(0, line.length - right.length), right }
 }
@@ -468,7 +503,7 @@ export function countLine(t: Totals): string {
   if (t.sessions === 0) {
     return 'no sessions'
   }
-  return `${t.sessions} session${t.sessions === 1 ? '' : 's'}${t.costlier > 0 ? ` · ${t.costlier} cost more` : ''} · spent ${dollars(t.actualUsd)} instead of ${dollars(t.baselineUsd)}`
+  return `${t.sessions} session${t.sessions === 1 ? '' : 's'}${t.costlier > 0 ? ` · ${t.costlier} cost more` : ''} · spent ${dollars(t.actualUsd)} instead of ${dollars(t.baselineUsd)}${t.upgradeUsd >= 0.0005 ? ` (${dollars(t.upgradeUsd)} more on stronger models, by choice)` : ''}`
 }
 
 /** `/router stats`: the same summary as the pane, as text for surfaces with no pane. */
@@ -497,7 +532,7 @@ export function statsText(records: SessionRecord[], kind: Period, now: number, o
   }
   lines.push(
     '',
-    `Dollars are list-price estimates against each session's own /model, priced when they ran; tokens are tool output and transcript kept out of the context. Weeks run Monday to Sunday; a session counts in the period it started. History: \`${where}\`. \`/router stats week|month [n]\` shows n periods back.`,
+    `Dollars are list-price estimates against each session's own /model, priced when they ran. Net is the saving on work done on that model or a cheaper one; quality ↑ is what work on a stronger model than the session's own cost over it, paid for quality and never counted as a loss. Tokens are tool output and transcript kept out of the context. Weeks run Monday to Sunday; a session counts in the period it started. History: \`${where}\`. \`/router stats week|month [n]\` shows n periods back.`,
   )
   return lines.join('\n')
 }

@@ -388,3 +388,34 @@ test('a tool\'s progress lines compressed away count as tokens saved in the sess
   expect((record?.ledger.tokensSaved ?? 0) > 1_000).toBe(true)
   expect(record?.ledger.tokensSaved).toBe(Math.round((raw.length - (record?.ledger.keptChars ?? 0)) / 4))
 })
+
+test('a v1 record of a Haiku session reads its extra as a quality upgrade, not a loss; others stay as written', () => {
+  const ledger = (actualUsd: number, baselineUsd: number) => {
+    const { upgradeSteps: _a, upgradeActualUsd: _b, upgradeBaselineUsd: _c, workerUpgradeActualUsd: _d, workerUpgradeBaselineUsd: _e, ...old } = { ...emptyLedger(), routedSteps: 5, actualUsd, baselineUsd }
+    return old
+  }
+  const lines = [
+    { v: 1, id: 'h', start: 1, end: 2, project: 'p', model: 'claude-haiku-5-5', mode: 'crew', prices: '2026-10', ledger: ledger(3.05, 0.39) },
+    { v: 1, id: 's', start: 3, end: 4, project: 'p', model: 'claude-sonnet-5-5', mode: 'crew', prices: '2026-10', ledger: ledger(0.6, 0.4) },
+  ].map(r => JSON.stringify(r)).join('\n')
+  const [h, s] = readHistoryText(lines).records
+  near(saved(h!.ledger), 0)
+  near(partsOf(h!.ledger).upgrade, 2.66)
+  near(saved(s!.ledger), -0.2)
+  expect(totals([h!, s!]).costlier).toBe(1)
+  near(totals([h!, s!]).upgradeUsd, 2.66)
+  // Written back, the split stays: a second read does not move it again.
+  const again = readHistoryText(serializeHistory([h!, s!])).records
+  near(saved(again[0]!.ledger), 0)
+  near(partsOf(again[0]!.ledger).upgrade, 2.66)
+})
+
+test('a quality upgrade shows apart in the sources, the row and the stats, never as a loss', () => {
+  const l = addLedger(emptyLedger(), { routedSteps: 1, actualUsd: 0.5, baselineUsd: 0.1, upgradeSteps: 1, upgradeActualUsd: 0.5, upgradeBaselineUsd: 0.1 })
+  expect(sourcesLine(partsOf(l))).toBe('quality ↑$0.400')
+  const r: SessionRecord = { v: 1, id: 'x', start: NOW, end: NOW, project: 'app', model: 'claude-haiku-5-5', mode: 'crew', prices: '2026-10', ledger: l }
+  expect(sessionRow(r, 40).right).toBe('$0.000 ↑$0.400')
+  const text = statsText([r], 'week', NOW, 0, 'h.jsonl')
+  expect(text).toContain('quality ↑$0.400')
+  expect(text).not.toContain('cost more')
+})

@@ -15,11 +15,11 @@ Cache-aware model routing, rtk-style Bash output compression and terse answers f
 | `hooks/classify.ts` | local EN/PL rules (code, non-code, simple git), negations and size signals, research → Sonnet policy, dissatisfaction, follow-up detection, the Haiku judge's rubric, the laya-serve question |
 | `hooks/adapt.ts` | effort per task (never `max` or `ultracode`), the Desktop effort labels, the ultracode check, the learned per-category bias |
 | `hooks/why.ts` | turns the last decision entry into the `/router why` explanation |
-| `hooks/cost.ts` | list prices, cache-aware turn cost, switch economics, the savings and cache-hit ledger |
-| `hooks/history.ts` | the savings history: per-session records, calendar weeks and months, totals, sources, ranking, `/router stats` text |
+| `hooks/cost.ts` | list prices, cache-aware turn cost, switch economics, the savings and cache-hit ledger; savings and quality upgrades (work on a stronger model than the session's) kept apart |
+| `hooks/history.ts` | the savings history: per-session records (v1 read as written; a v1 Haiku session's extra read as an upgrade), calendar weeks and months, totals, sources, ranking, `/router stats` text |
 | `hooks/compact.ts` | auto-compact: renders the transcript, sums with the cheap model in ~100k-token chunks, keeps the recent tail word for word |
 | `hooks/compress.ts` | rtk-lite: command families, noise, per-tool progress and passing-test filters, folding, cutting, `rtk pipe` filters |
-| `hooks/crew.ts` | crew mode: worker definitions, the orchestrator's section, delegation hints |
+| `hooks/crew.ts` | crew mode: worker definitions, the orchestrator's section (start_session rule where the app has it), delegation hints, mechanical-task sizing and the Haiku hand-off cost math (cold start included) |
 | `hooks/style.ts` | the `terse` and `adhd` system-prompt sections |
 | `types/index.d.ts` | the `$.state` contract |
 | `tests/` | `claude plugin test .`; `classify.test.ts` holds the labelled prompt corpus (≥85% target), `why.test.ts` the explanations, `adapt.test.ts` effort and learning |

@@ -1,7 +1,7 @@
 {
   "name": "model-router",
-  "version": "1.12.1",
-  "description": "Cache-aware model and effort routing for Claude Code Desktop: each prompt goes to Haiku, Sonnet or Opus by what it needs, and a cheaper model or effort only when that pays after the prompt-cache re-write. Rules read non-code work too, research is Sonnet at most, !+ and !- nudge the tier, /router-help lists every command, /router why explains the decision, /router-cache shows the cache hit rate and /router-budget caps the spend. Long sessions auto-compact with Haiku at tier thresholds, every prompt you send carries a small model·effort tag, and savings show in dollars and tokens. The hardest tasks can run as Ultracode. Crew mode adds warm per-model workers. Bash output is compressed rtk-style and answers drop the filler.",
+  "version": "1.13.0",
+  "description": "Cache-aware model and effort routing for Claude Code Desktop: each prompt goes to Haiku, Sonnet or Opus by what it needs, and a cheaper model or effort only when that pays after the prompt-cache re-write. Rules read non-code work too, research is Sonnet at most, !+ and !- nudge the tier, /router-help lists every command, /router why explains the decision, /router-cache shows the cache hit rate and /router-budget caps the spend. Long sessions auto-compact with Haiku at tier thresholds, every prompt you send carries a small model·effort tag, and savings show in dollars and tokens. The hardest tasks can run as Ultracode. Crew mode keeps your /model and hands mechanical work to a warm Haiku worker when that is clearly cheaper; savings and paid quality upgrades are shown apart. Bash output is compressed rtk-style and answers drop the filler.",
   "author": {
     "name": "preisnerai"
   },
@@ -24,7 +24,7 @@
     "mode": {
       "type": "string",
       "title": "Mode",
-      "description": "route moves the main session to another model when a prompt needs it and the cache math says it pays. crew keeps the main session on one orchestrator model from the first prompt on (its cache is never thrown away) and hands work of several tool calls to long-lived Haiku, Sonnet and Opus workers, each with its own warm cache.",
+      "description": "route moves the main session to another model when a prompt needs it and the cache math clearly says it pays. crew keeps the main session on one model from the first prompt on (its cache is never thrown away), hands mechanical work with a large input (search, read, run and report, exact edits) to a Haiku worker when that is clearly cheaper, and harder work to Sonnet or Opus workers, each with its own warm cache.",
       "options": [
         "route",
         "crew"
@@ -34,19 +34,19 @@
     "orchestrator": {
       "type": "string",
       "title": "Crew orchestrator",
-      "description": "The model the main session stays on in crew mode. A tier other than your /model overrides it for every main-loop request (the note, pane and /router say so); session follows your /model.",
+      "description": "The model the main session stays on in crew mode. session (the default) keeps your /model, so no model is swapped under you and nothing is billed as an override. A fixed tier overrides /model for every main-loop request (the note, pane and /router say so); above your /model that is a paid quality upgrade, shown apart from the savings.",
       "options": [
         "haiku",
         "sonnet",
         "opus",
         "session"
       ],
-      "default": "sonnet"
+      "default": "session"
     },
     "escalate": {
       "type": "string",
       "title": "Harder tasks",
-      "description": "auto moves a session to a stronger model when a prompt needs it (or tools keep failing); suggest only names it in the status line.",
+      "description": "auto moves a session to a stronger model when a prompt needs it (or tools keep failing), and in crew mode hints a hand-off to a stronger worker; suggest only names it in the status line. Either way the extra is shown as a quality upgrade, not a loss.",
       "options": [
         "auto",
         "suggest"

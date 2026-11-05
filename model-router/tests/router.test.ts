@@ -1183,6 +1183,18 @@ test('/router-compact shows status and toggles the session switch', { options: {
   expect((await command($, 'router-compact', 'on')).text).toContain('auto-compact on')
 })
 
+test('/router-compact now reaches the compaction; a threshold of 0 turns a tier off', { options: { mode: 'route', compactSonnetAt: 0 } }, async ($, on) => {
+  world(on)
+  on('session.compact', () => ({ skip: 'test' }))
+  await start($)
+  // It used to throw a ReferenceError: the flag it sets lived inside register, out of runRouter's reach.
+  const now = await command($, 'router-compact', 'now')
+  expect(now.text ?? '').not.toContain('ReferenceError')
+  const shown = await command($, 'router-compact')
+  expect(shown.text).toContain('Sonnet off')
+  expect(shown.text).toContain('Haiku 600k')
+})
+
 // Stands for the engine's own drawing of a component beneath the plugins: its text, plain.
 function engineDraws(on: On) {
   on('ui.render', ($, e) => ({ type: 'Text', children: [String((e.props as { text?: unknown; modes?: unknown[] }).text ?? ((e.props as { modes?: unknown[] }).modes ?? []).join(' & '))] }) as never)

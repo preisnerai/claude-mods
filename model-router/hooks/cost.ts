@@ -167,6 +167,11 @@ export function emptyLedger(): Ledger {
     workerRoutedSteps: 0,
     workerActualUsd: 0,
     workerBaselineUsd: 0,
+    upgradeSteps: 0,
+    upgradeActualUsd: 0,
+    upgradeBaselineUsd: 0,
+    workerUpgradeActualUsd: 0,
+    workerUpgradeBaselineUsd: 0,
     switches: 0,
     holds: 0,
     judgeCalls: 0,
@@ -201,14 +206,75 @@ export function addLedger(ledger: Ledger, delta: LedgerDelta): Ledger {
   return next
 }
 
-/** Money saved: what the session's own model would have charged, minus what was charged, minus judging. Negative: it cost more. */
-export function saved(ledger: Ledger): number {
+// Model families from cheapest to strongest, to tell a step up from a step down whatever the version.
+const FAMILY = ['haiku', 'sonnet', 'opus', 'fable', 'mythos']
+
+function familyRank(model: string): number {
+  const id = canonical(model)
+  return FAMILY.findIndex(f => id.includes(f))
+}
+
+/**
+ * A request on a stronger model family than the session's own (a Haiku session's work on Sonnet or Opus): paid
+ * for quality, not a routing loss. Its extra is kept apart from the savings (`upgradeUsd`).
+ */
+export function isUpgrade(answered: string, sessionModel: string): boolean {
+  const a = familyRank(answered)
+  const s = familyRank(sessionModel)
+  return a >= 0 && s >= 0 && a > s
+}
+
+/**
+ * What one billed request adds to the ledger: its cost and its baseline (the same request on the session's own
+ * model), and, when it ran on a stronger family than the session's, the same pair again as an upgrade.
+ */
+export function requestDelta(answered: string, sessionModel: string, actual: number, baseline: number, worker = false): LedgerDelta {
+  const routed = canonical(answered) === canonical(sessionModel) ? 0 : 1
+  const up = isUpgrade(answered, sessionModel)
+  return {
+    routedSteps: routed,
+    actualUsd: actual,
+    baselineUsd: baseline,
+    ...(up ? { upgradeSteps: 1, upgradeActualUsd: actual, upgradeBaselineUsd: baseline } : {}),
+    ...(worker
+      ? {
+          workerSteps: 1,
+          workerRoutedSteps: routed,
+          workerActualUsd: actual,
+          workerBaselineUsd: baseline,
+          ...(up ? { workerUpgradeActualUsd: actual, workerUpgradeBaselineUsd: baseline } : {}),
+        }
+      : {}),
+  }
+}
+
+/** The old single number: baseline minus cost minus judging, upgrades included. Negative: it cost more. */
+export function net(ledger: Ledger): number {
   return ledger.baselineUsd - ledger.actualUsd - ledger.judgeUsd
+}
+
+/** What was paid on purpose for stronger models than the session's own: the upgrades' cost over their baseline. */
+export function upgradeUsd(ledger: Ledger): number {
+  return (ledger.upgradeActualUsd ?? 0) - (ledger.upgradeBaselineUsd ?? 0)
+}
+
+/**
+ * Money saved: on every request that ran on the session's own model family or a cheaper one, what the session's
+ * model would have charged minus what was charged, minus judging. Upgrades are not in it (see `upgradeUsd`), so a
+ * Haiku session that hands work to Opus never reads as a routing loss. Negative: routing down cost more.
+ */
+export function saved(ledger: Ledger): number {
+  return net(ledger) + upgradeUsd(ledger)
 }
 
 /** The crew workers' part of `saved`: their requests against the same requests on the session's own model. */
 export function workerSaved(ledger: Ledger): number {
-  return (ledger.workerBaselineUsd ?? 0) - (ledger.workerActualUsd ?? 0)
+  return (ledger.workerBaselineUsd ?? 0) - (ledger.workerActualUsd ?? 0) + (ledger.workerUpgradeActualUsd ?? 0) - (ledger.workerUpgradeBaselineUsd ?? 0)
+}
+
+/** The workers' part of `upgradeUsd`. */
+export function workerUpgradeUsd(ledger: Ledger): number {
+  return (ledger.workerUpgradeActualUsd ?? 0) - (ledger.workerUpgradeBaselineUsd ?? 0)
 }
 
 /** The main loop's part of `saved`, judging included. */
@@ -222,6 +288,24 @@ export function mainSaved(ledger: Ledger): number {
  */
 export function savingsText(n: number, baseline: string): string {
   return n >= 0 ? `saved ≈${dollars(n)}` : `extra ≈${dollars(-n)} vs your ${baseline}`
+}
+
+/** The upgrade part for people: `quality +$0.40 over your Haiku`; empty when nothing was upgraded. */
+export function upgradeText(n: number, baseline: string): string {
+  return n < 0.0005 ? '' : `quality +${dollars(n)} over your ${baseline}`
+}
+
+/**
+ * The whole money line: the saving, and beside it what was paid for stronger models. A session whose only
+ * difference from its model is an upgrade shows the upgrade alone, never a `saved ≈$0.000` before it.
+ */
+export function moneyText(ledger: Ledger, baseline: string): string {
+  const s = saved(ledger)
+  const up = upgradeText(upgradeUsd(ledger), baseline)
+  if (up !== '' && Math.abs(s) < 0.0005) {
+    return up
+  }
+  return [savingsText(s, baseline), up].filter(Boolean).join(' · ')
 }
 
 /** Share of requests that read any cache; undefined before the first cacheable request. */
