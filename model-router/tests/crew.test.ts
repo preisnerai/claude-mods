@@ -2,10 +2,13 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { AgentInfo, On, TurnUsage } from 'claude-code'
 
+import { CACHE } from '../hooks/cost'
+import { crewSection, handoffCost, handoffPays, mechanicalProfile } from '../hooks/crew'
+
 // The prompt row carries the mod's tag after the typed words; tests of the prompt's own words drop it.
 const bare = (text: string | undefined) => (text ?? '').replace(/\n\n\*router: [^*]+\*$/, '')
 
-const CREW = { options: { mode: 'crew' } }
+const CREW = { options: { mode: 'crew', orchestrator: 'sonnet' } }
 const COMPOSE = { model: 'claude-sonnet-5-5', promptModel: 'claude-sonnet-5-5', surfaces: [], tools: ['Agent', 'SendMessage', 'Bash'], outputStyle: null, traits: [] }
 
 function world(on: On, model = 'claude-opus-5-5', judge?: string) {
@@ -246,7 +249,7 @@ test('/router off turns crew off: no crew section, no spawn checks', CREW, async
   expect((await spawn($, 'model-router:worker-haiku')).deny).toBeUndefined()
 })
 
-test('a teammate gets the terse rules even when the person chose the ADHD shape', { options: { mode: 'crew', style: 'adhd' } }, async ($, on) => {
+test('a teammate gets the terse rules even when the person chose the ADHD shape', { options: { mode: 'crew', orchestrator: 'sonnet', style: 'adhd' } }, async ($, on) => {
   world(on)
   on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' }] }))
   await start($)
@@ -291,7 +294,7 @@ test('on a Haiku session the crew note, pane and log say Sonnet overrides it', C
   await ui.unmount()
 })
 
-test('a crew that costs more than the session model says extra, never a negative saving', CREW, async ($, on) => {
+test('a Sonnet orchestrator on a Haiku session is a quality upgrade, never a loss or a negative saving', CREW, async ($, on) => {
   const w = world(on, 'claude-haiku-5-5')
   await start($)
 
@@ -300,13 +303,77 @@ test('a crew that costs more than the session model says extra, never a negative
   await step($, undefined, 'claude-haiku-5-5')
   const done = await complete($)
 
-  expect(done.text).toMatch(/extra ≈\$0\.\d+ vs your Haiku/)
+  expect(done.text).toMatch(/quality \+\$0\.\d+ over your Haiku/)
+  expect(done.text).not.toContain('extra ≈')
   expect(done.text).not.toContain('saved ≈-')
   const report = await $.command.run({ command: 'router', args: '', ...ROUTER })
   expect(report.text).toContain('Sonnet·medium (overrides your Haiku) · crew')
-  expect(report.text).toMatch(/\| main loop \| extra ≈\$0\.\d+ vs your Haiku: .*1 requests on another model/)
+  expect(report.text).toMatch(/\| main loop \| quality \+\$0\.\d+ over your Haiku: .*1 requests on another model/)
+  expect(report.text).toMatch(/1 requests routed \(1 up\)/)
   expect(report.text).toContain('| workers | — |')
   expect(report.text).not.toContain('≈$-')
+})
+
+test('by default crew keeps the session model: a Haiku session is never overridden', { options: { mode: 'crew' } }, async ($, on) => {
+  const w = world(on, 'claude-haiku-5-5')
+  await start($)
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($, undefined, 'claude-haiku-5-5')
+  const done = await complete($)
+  expect(w.sent.map(s => s.model)).toEqual(['claude-haiku-5-5'])
+  expect(done.text).not.toContain('overrides')
+})
+
+test('a mechanical task with a large input goes to worker-haiku; a tiny one and any judgment stay', { options: { mode: 'crew' } }, async ($, on) => {
+  const w = world(on, 'claude-sonnet-5-5')
+  await start($)
+  // A warm, large main context: every tool call here would re-read it, and every result would stay in it.
+  w.setUsage({ input_tokens: 100, output_tokens: 500, cache_read_input_tokens: 120_000, cache_creation_input_tokens: 0, model: '' })
+  await submit($, 'hi there')
+  await step($, undefined, 'claude-sonnet-5-5')
+  await complete($)
+
+  const search = await submit($, 'znajdź wszystkie użycia parsePrice w całym repo i wypisz pliki')
+  expect(search.context?.at(-1)).toContain('hand the reading and running to worker-haiku')
+  expect(search.context?.at(-1)).toContain('check its report')
+  await complete($)
+
+  const debug = await submit($, 'find where parsePrice is used and debug why it returns NaN')
+  expect(debug.context?.at(-1) ?? '').not.toContain('worker-haiku')
+  await complete($)
+
+  // An exact one-line edit in one file: a hand-off and a cold worker cost more than doing it.
+  const tiny = await submit($, 'fix the typo in README.md, just one line')
+  expect(tiny.context?.at(-1) ?? '').not.toContain('worker-haiku')
+  await complete($)
+
+  const log = await decisions($)
+  expect(log.some(e => e.event === 'delegate' && e.tier === 'haiku')).toBe(true)
+})
+
+test('a worker spawned for Haiku answers on Haiku even when its loop asks for another model', CREW, async ($, on) => {
+  const w = world(on, 'claude-sonnet-5-5')
+  await start($)
+  await submit($, 'look around')
+  const { agentId } = await spawn($, 'model-router:worker-haiku')
+  await step($, agentId, 'claude-sonnet-5-5')
+  expect(w.sent.at(-1)).toEqual({ model: 'claude-haiku-5-5', agentId })
+})
+
+test('a harder task under escalate: suggest names the worker, adds no hand-off', { options: { mode: 'crew', escalate: 'suggest' } }, async ($, on) => {
+  world(on, 'claude-sonnet-5-5')
+  await start($)
+  const hard = await submit($, 'Why does this deadlock only under load?')
+  expect(hard.context?.at(-1) ?? '').not.toContain('worker-opus')
+  const done = await complete($)
+  expect(done.text).toContain('consider !opus')
+})
+
+test('a background task notice is not a task: no hand-off from a worker report it carries', CREW, async ($, on) => {
+  world(on, 'claude-sonnet-5-5')
+  await start($)
+  const notice = await submit($, '<task-notification>\n<task-id>w0mb</task-id>\n<result>security audit of auth: 18 files, src/a.ts src/b.ts src/c.ts src/d.ts, root cause found</result>\n</task-notification>')
+  expect(notice.context?.at(-1) ?? '').not.toContain('worker-opus')
 })
 
 test('orchestrator: session follows the session model and sends its requests untouched', { options: { mode: 'crew', orchestrator: 'session' } }, async ($, on) => {
@@ -374,7 +441,7 @@ test('a follow-up with no hand-off before it stays with the orchestrator', CREW,
   expect(follow.context ?? []).toEqual([])
 })
 
-test('crewJudge asks the judge what the rules cannot call; off, the rules alone decide', { options: { mode: 'crew', crewJudge: true } }, async ($, on) => {
+test('crewJudge asks the judge what the rules cannot call; off, the rules alone decide', { options: { mode: 'crew', orchestrator: 'sonnet', crewJudge: true } }, async ($, on) => {
   world(on, 'claude-opus-5-5', 'OPUS confidence 0.9')
   await start($)
   const vague = await submit($, 'Help me with my thing in the app.')
@@ -429,4 +496,52 @@ test('a crew prompt row is tagged with the orchestrator it ran on and the worker
   const ui = await $.ui.mount({ plugin: 'model-router', component: 'UserMessage', props: { text: prompt, origin: { kind: 'composer' }, isExpanded: true } as never, surface: 'desktop' })
   expect((await ui.find({ type: 'Text', text: 'router: Sonnet·medium (overrides your Haiku) · crew → worker-opus' })) !== undefined).toBe(true)
   await ui.unmount()
+})
+
+test('a hand-off to Haiku pays for wide reading in a big context, never for a task of two tool calls', async () => {
+  const at = (context: number, task: { steps: number; output: number; added: number }) => ({
+    orchestrator: { model: 'claude-sonnet-5-5', effort: 'medium' },
+    context,
+    warm: { 'claude-sonnet-5-5@medium': { tokens: context, at: 0 } },
+    now: 1_000,
+    cache: CACHE['1h'],
+    worker: { model: 'claude-haiku-5-5', effort: 'low' },
+    workerCache: CACHE['5m'],
+    task,
+  })
+  const wide = mechanicalProfile(['code search'], 'find all usages of parsePrice across the repo')!
+  expect(wide.steps > 4).toBe(true)
+  expect(handoffPays(at(120_000, wide))).toBe(true)
+  const tiny = mechanicalProfile(['typo'], 'fix the typo in README.md, just one line')!
+  expect(tiny.steps <= 2).toBe(true)
+  expect(handoffPays(at(120_000, tiny))).toBe(false)
+  // No tool work: a question, or text that is already in the chat.
+  expect(mechanicalProfile(['quick question'], 'what is a monad?')).toBeUndefined()
+  expect(mechanicalProfile(['summary'], 'podsumuj to co ustaliliśmy')).toBeUndefined()
+  expect(mechanicalProfile(['summary'], 'podsumuj logi w logs/app.log')).toBeDefined()
+  // The cost of both paths is known and positive; the hand-off keeps the tool output out of the big context.
+  const cost = handoffCost(at(120_000, wide))!
+  expect(cost.delegated > 0 && cost.local > cost.delegated).toBe(true)
+})
+
+test('the crew section keeps the session model, guards Haiku and names start_session only where it exists', async () => {
+  const plain = crewSection('sonnet', ['haiku', 'sonnet', 'opus'], true)
+  expect(plain).toContain('stay on it')
+  expect(plain).toContain('Never debugging, design, security, decisions or reviews')
+  expect(plain).toContain('above all a Haiku report')
+  expect(plain).not.toContain('start_session')
+  const desk = crewSection('sonnet', ['haiku', 'sonnet', 'opus'], true, { sessions: true, haikuModel: 'claude-haiku-5-5' })
+  expect(desk).toContain('start_session')
+  expect(desk).toContain('context "fresh", model "claude-haiku-5-5"')
+  expect(desk).toContain('never as a fork')
+})
+
+test('the orchestrator is told about start_session when the app offers it', CREW, async ($, on) => {
+  world(on)
+  on('prompt.compose', () => ({ sections: [] }))
+  await start($)
+  const with_ = await $.prompt.compose({ ...COMPOSE, tools: [...COMPOSE.tools, 'mcp__ccd_session__start_session'] } as never)
+  expect(with_.sections.find(s => s.id === 'model-router:crew')?.text).toContain('start_session')
+  const without = await $.prompt.compose(COMPOSE as never)
+  expect(without.sections.find(s => s.id === 'model-router:crew')?.text).not.toContain('start_session')
 })

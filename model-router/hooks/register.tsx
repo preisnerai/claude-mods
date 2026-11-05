@@ -6,9 +6,11 @@ import { EFFORTS, ULTRACODE, categoryOf, clampEffort, effortFor, effortLabel, is
 import type { Bias } from './adapt'
 import {
   ORDER,
+  clean,
   heuristic,
   isDissatisfied,
   isFollowUp,
+  isJudgment,
   layaQuestion,
   nextTier,
   parseJudgeVerdict,
@@ -20,12 +22,12 @@ import {
 } from './classify'
 import type { Verdict } from './classify'
 import { MIN_CHARS, compress, familyOf, keepsSignal, rtkFilter } from './compress'
-import { CACHE, PRICES_VERSION, PROFILE, addLedger, cacheHitRate, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, mainSaved, promptOf, requestCost, saved, savingsText, size, switchDelta, turnCost, usd, workerSaved } from './cost'
+import { CACHE, PRICES_VERSION, PROFILE, addLedger, cacheHitRate, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, mainSaved, moneyText, promptOf, requestCost, requestDelta, saved, savingsText, size, switchDelta, turnCost, upgradeText, upgradeUsd, usd, workerSaved, workerUpgradeUsd } from './cost'
 import { estimateTokens, summarize } from './compact'
 import type { Cache, LedgerDelta, Profile, Target } from './cost'
 import { dayRow, folderName, isEmptyDelta, ledgerSince, paneWidth, readHistoryText, relativeName, serializeHistory, sessionDetail, sessionRow, shiftOffset, shortRange, signedUsd, sourcesLine, statsText, subLine, summarizePeriod, trim, upsert } from './history'
 import type { Period } from './history'
-import { WORKERS, crewSection, delegationHint, followUpHint, tierOfWorker, workerName, workerSpec, workerType } from './crew'
+import { HANDOFF, WORKERS, crewSection, delegationHint, followUpHint, handoffPays, mechanicalProfile, tierOfWorker, workerName, workerSpec, workerType } from './crew'
 import { STYLE, isStyle } from './style'
 import { explainDecision, lastDecision, lastUltracodeAfter } from './why'
 
@@ -117,6 +119,9 @@ const NUDGE = /^!([+-])\s*/i
 const STRIKES = 3
 // A judge answer below this confidence is not a decision: the current model stays.
 const JUDGE_FLOOR = 0.55
+// A switch to a cheaper model is taken only when it saves at least this share of staying: the turn profile is an
+// estimate, and a switch that only breaks even still throws a warm cache away.
+const SWITCH_MARGIN = 0.1
 const LAYA_TIMEOUT_MS = 4_000
 const LOG_CAP = 500
 const TEE_SLOTS = 200
@@ -148,6 +153,7 @@ const compactPending = atom({ plugin: 'model-router', key: 'compactPending' } as
 const compactStamp = atom({ plugin: 'model-router', key: 'compactStamp' } as const, null)
 const workers = atom({ plugin: 'model-router', key: 'workers' } as const, [])
 const workerWarm = atom({ plugin: 'model-router', key: 'workerWarm' } as const, {})
+const workerTier = atom({ plugin: 'model-router', key: 'workerTier' } as const, {})
 const paneAsked = atom({ plugin: 'model-router', key: 'paneAsked' } as const, false)
 const note = atom({ plugin: 'model-router', key: 'note' } as const, null)
 const noteTail = atom({ plugin: 'model-router', key: 'noteTail' } as const, null)
@@ -215,6 +221,18 @@ type Config = {
 
 function flag(value: unknown, fallback: boolean): boolean {
   return value === undefined || value === '' ? fallback : String(value) === 'true'
+}
+
+/** A token threshold from settings: 0 means off (never reached), a missing or broken value the default. */
+function tokenThreshold(value: unknown, fallback: number): number {
+  const n = value === undefined || value === '' ? fallback : Number(value)
+  return !Number.isFinite(n) || n < 0 ? fallback : n === 0 ? Infinity : n
+}
+
+/** A count from settings, 0 allowed. */
+function count(value: unknown, fallback: number): number {
+  const n = value === undefined || value === '' ? fallback : Number(value)
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback
 }
 
 function pick<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
@@ -458,7 +476,7 @@ async function status($: $, text: string) {
   lastStatus = text
   const l = await read($, ledger)
   const tok = l.tokensSaved > 0 ? ` · ≈${size(l.tokensSaved)} tok` : ''
-  const money = l.routedSteps > 0 ? ` · ${savingsText(saved(l), await ownName($))}` : ''
+  const money = l.routedSteps > 0 ? ` · ${moneyText(l, await ownName($))}` : ''
   $.ui.status(`router: ${text}${money}${tok}`)
 }
 
@@ -639,10 +657,13 @@ async function apply($: $, given: Verdict, cfg: Config, prompt?: string): Promis
       const cost = delta === undefined ? '' : ` (+${dollars(delta)} with the cache re-write of ${size(tokens)} tokens)`
       why = take ? `${verdict.why}${cost}` : `consider !${verdict.tier}${cost}`
     } else if (delta !== undefined) {
-      take = delta < 0
+      const stayCost = costOf(from) ?? 0
+      take = delta < -SWITCH_MARGIN * stayCost
       why = take
         ? `saves ≈${dollars(-delta)}`
-        : `switching costs ${dollars(delta)} more (cache re-write of ${size(tokens)} tokens)`
+        : delta < 0
+          ? `switching saves only ≈${dollars(-delta)}, not worth the warm cache of ${size(tokens)} tokens`
+          : `switching costs ${dollars(delta)} more (cache re-write of ${size(tokens)} tokens)`
     }
     if (tokens > 0) {
       await bill($, take ? { switches: 1 } : { holds: 1 })
@@ -753,6 +774,12 @@ async function routePrompt($: $, text: string, cfg: Config): Promise<Verdict | u
     await status($, `${describe({ ...current, source: 'follow-up' })}`)
     return undefined
   }
+  // An app notice with no words of the person's (a finished background task, a reminder): nothing to route,
+  // and no judge call for it. The current model answers, as for a follow-up.
+  if (words(text) === 0) {
+    await log($, 'unsure', { tier: current?.tier ?? tierOf(await $.session.model()) ?? null, effort: current?.effort ?? null, why: 'app notice', decision: 'kept the current model', taken: false, context: await read($, context), prompt: text.slice(0, 280) })
+    return undefined
+  }
   // "hi" says too little to route: the session's /model answers it, and the next prompt routes.
   if (current === null && words(text) < 3) {
     await log($, 'unsure', {
@@ -857,9 +884,11 @@ function addressOf(a: AgentInfo): string {
 
 /**
  * Crew mode: a prompt that needs another model reaches the orchestrator with a hint to hand it over. Forced
- * (`!opus …`): always, unless the orchestrator is that model already. Otherwise only for a harder tier than
- * the orchestrator's: below it, a hand-off and a report cost more than doing the task. A short follow-up
- * ("tak rób") goes on with the worker the last task went to. `midTurn`: typed while a turn runs.
+ * (`!opus …`): always, unless the orchestrator is that model already. A harder tier than the orchestrator's:
+ * for quality, under `escalate: auto` (`suggest` only names it). A mechanical Haiku task (search, read, run and
+ * report, exact edits): only when the cost math says the hand-off is clearly cheaper than doing it here
+ * (`handoffPays`: a small task in a small context stays), and never debugging, design, security, decisions or
+ * reviews. A short follow-up ("tak rób") goes on with the worker the last task went to. `midTurn`: typed while a turn runs.
  */
 async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Config, midTurn = false): Promise<string | undefined> {
   await update($, note, () => null)
@@ -873,6 +902,7 @@ async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Conf
   const isFollow = forcedTier === null && isFollowUp(text, false)
   // There is no Fable worker: a forced !fable goes to the strongest worker there is, and says so.
   let asked: Tier | undefined
+  let verdict: Verdict | undefined
   let source = forcedTier !== null ? 'forced' : 'rule'
   if (forcedTier !== null) {
     asked = forcedTier
@@ -880,18 +910,32 @@ async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Conf
     asked = previous?.tier
     source = 'follow-up'
   } else {
-    asked = heuristic(text, false, { failedTools: await read($, strikes) })?.tier
-    if (asked === undefined && cfg.crewJudge) {
+    verdict = heuristic(text, false, { failedTools: await read($, strikes) })
+    if (verdict === undefined && cfg.crewJudge) {
       // What the rules cannot call goes to laya-serve or the Haiku judge, when the person turned that on.
-      const verdict = await classify($, text, cfg)
-      asked = verdict?.tier
+      verdict = await classify($, text, cfg)
       source = verdict?.source ?? source
     }
+    asked = verdict?.tier
   }
   const tier = asked === 'fable' ? 'opus' : asked
-  const wanted = tier !== undefined && tier !== orchestrator && (forcedTier !== null || isFollow || rank(tier) > rank(orchestrator))
+  const isUp = tier !== undefined && rank(tier) > rank(orchestrator)
+  // A cheaper worker than the orchestrator, unasked: only Haiku, only mechanical work, only when it pays.
+  let down: { pays: boolean; why: string } | undefined
+  if (forcedTier === null && !isFollow && tier === 'haiku' && orchestrator !== 'haiku') {
+    down = await haikuHandoff($, text, verdict, orchestrator, cfg)
+  }
+  const wanted = tier !== undefined && tier !== orchestrator && (forcedTier !== null || isFollow || (isUp && cfg.escalate === 'auto') || down?.pays === true)
   if (tier === undefined || !wanted) {
-    const why = isFollow ? 'follow-up' : tier === undefined ? 'no clear tier' : `${tier} task, orchestrator handles it`
+    const why = isFollow
+      ? 'follow-up'
+      : tier === undefined
+        ? 'no clear tier'
+        : down !== undefined
+          ? `haiku task, ${down.why}`
+          : isUp
+            ? `${tier} task, consider !${tier}`
+            : `${tier} task, orchestrator handles it`
     if (!isFollow) {
       // A new task the orchestrator keeps: a later "tak rób" follows it, not a worker's older one.
       await update($, crewTask, () => null)
@@ -913,7 +957,7 @@ async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Conf
     })
     await update($, note, () => `model-router: ${label.text} · crew · ${why}`)
     await update($, noteTail, () => `crew · ${why}`)
-    await status($, orchestrates)
+    await status($, isUp ? `${orchestrates} · ${why}` : orchestrates)
     return undefined
   }
   const live = await liveWorker($, tier)
@@ -929,8 +973,40 @@ async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Conf
     await update($, pendingHandoff, () => ({ tier, worker: name, address: address ?? null, prompt: text.slice(0, 120) }))
   }
   await status($, `${orchestrates} · ${tier} task → ${name}${how}${swap}`)
-  await log($, 'delegate', { tier, forced: forcedTier !== null, followUp: isFollow, source, worker: name, orchestrator, from: tierOf(session) ?? null, session, prompt: text.slice(0, 280) })
-  return isFollow ? followUpHint(tier, address) : delegationHint(tier, forcedTier !== null, address)
+  await log($, 'delegate', { tier, forced: forcedTier !== null, followUp: isFollow, source, worker: name, orchestrator, from: tierOf(session) ?? null, session, ...(down === undefined ? {} : { why: down.why }), prompt: text.slice(0, 280) })
+  return isFollow ? followUpHint(tier, address) : delegationHint(tier, forcedTier !== null, address, verdict?.why)
+}
+
+/**
+ * Whether a Haiku-tier prompt goes to worker-haiku: a mechanical task by its rule (not a question or text given
+ * here), no judgment in it, and a hand-off clearly cheaper than the orchestrator doing it, cold start included.
+ */
+async function haikuHandoff($: $, text: string, verdict: Verdict | undefined, orchestrator: Tier, cfg: Config): Promise<{ pays: boolean; why: string }> {
+  if (isJudgment(text)) {
+    return { pays: false, why: 'needs judgment, orchestrator handles it' }
+  }
+  const task = mechanicalProfile((verdict?.why ?? '').split(', '), clean(text))
+  if (task === undefined) {
+    return { pays: false, why: 'no tool work, orchestrator handles it' }
+  }
+  const now = await $.clock.now()
+  const own = tierOf(await ownModel($))
+  const orch: Target = own === orchestrator ? { model: await ownModel($), effort: (await read($, baseEffort)) ?? undefined } : { model: MODEL[orchestrator], effort: cfg.effort[orchestrator] }
+  const live = await liveWorker($, 'haiku')
+  const state = live === undefined ? undefined : (await read($, workerWarm))[live.id]
+  const pays = handoffPays({
+    orchestrator: orch,
+    // Before the first request the context is unknown: the system prompt and tools are at least a worker's.
+    context: Math.max(await read($, context), await read($, prefix), HANDOFF.workerPrefix),
+    warm: await read($, warm),
+    now,
+    cache: cfg.cache,
+    worker: { model: MODEL.haiku, effort: cfg.effort.haiku },
+    workerCache: cfg.workerCache,
+    ...(state === undefined ? {} : { live: { tokens: state.tokens, at: state.at } }),
+    task,
+  })
+  return { pays, why: pays ? 'cheaper on worker-haiku' : 'too small to hand off' }
 }
 
 /** Crew: the orchestrator reached a worker after a hand-off hint (a spawn or a SendMessage), or the turn ended first. */
@@ -977,6 +1053,10 @@ async function shrinkCaches($: $, keep: number) {
   await update($, warm, w => Object.fromEntries(Object.entries(w).map(([k, v]) => [k, { ...v, tokens: Math.min(v.tokens, keep) }])))
   await update($, shadow, s => (s === null ? null : { ...s, tokens: Math.min(s.tokens, keep) }))
 }
+
+// Set while the mod's own compaction runs (auto, or `/router compact now`), so its session.compact hook answers
+// it. Module scope: `/router compact now` sets it from runRouter, outside register (it threw a ReferenceError there).
+let autoCompactRequested = false
 
 // Bash commands by tool_use_id, so their results can be compressed by what ran. Lost on reload: harmless.
 const commands = new Map<string, string>()
@@ -1083,17 +1163,19 @@ async function report($: $, cfg: Config): Promise<string> {
   const learned = cfg.adapt ? learnedLine(await biasOf($), await $.clock.now()) : undefined
   const turns = (l: Ledger) => ORDER.filter(t => l.turns[t] > 0).map(t => `${NAME[t]} ${l.turns[t]}`).join(' · ') || '—'
   const name = await ownName($)
+  // A saving, and apart from it what stronger models than the session's own cost on purpose (never a loss).
+  const pair = (s: number, up: number) => [Math.abs(s) < 0.0005 && up >= 0.0005 ? '' : savingsText(s, name), upgradeText(up, name)].filter(Boolean).join(' · ')
   const money = (l: Ledger) =>
-    (l.baselineUsd === 0 ? '—' : `${savingsText(saved(l), name)}: ${dollars(l.actualUsd)} spent instead of ${dollars(l.baselineUsd)}, ${l.routedSteps} requests routed, judge ${l.judgeCalls}× ${dollars(l.judgeUsd)}`)
+    (l.baselineUsd === 0 ? '—' : `${moneyText(l, name)}: ${dollars(l.actualUsd)} spent instead of ${dollars(l.baselineUsd)}, ${l.routedSteps} requests routed${l.upgradeSteps > 0 ? ` (${l.upgradeSteps} up)` : ''}, judge ${l.judgeCalls}× ${dollars(l.judgeUsd)}`)
     + (l.tokensSaved > 0 ? ` · ≈${size(l.tokensSaved)} tokens kept out` : '')
   // The same money split: the main loop (crew's orchestrator, or route's switches, judging included) and the workers.
   const main = (l: Ledger) => {
     const actual = l.actualUsd - l.workerActualUsd
     const baseline = l.baselineUsd - l.workerBaselineUsd
-    return baseline === 0 && actual === 0 ? '—' : `${savingsText(mainSaved(l), name)}: ${dollars(actual)} instead of ${dollars(baseline)}, ${l.routedSteps - l.workerRoutedSteps} requests on another model`
+    return baseline === 0 && actual === 0 ? '—' : `${pair(mainSaved(l), upgradeUsd(l) - workerUpgradeUsd(l))}: ${dollars(actual)} instead of ${dollars(baseline)}, ${l.routedSteps - l.workerRoutedSteps} requests on another model`
   }
   const crew = (l: Ledger) =>
-    l.workerSteps === 0 ? '—' : `${savingsText(workerSaved(l), name)}: ${dollars(l.workerActualUsd)} instead of ${dollars(l.workerBaselineUsd)}, ${l.workerSteps} requests`
+    l.workerSteps === 0 ? '—' : `${pair(workerSaved(l), workerUpgradeUsd(l))}: ${dollars(l.workerActualUsd)} instead of ${dollars(l.workerBaselineUsd)}, ${l.workerSteps} requests`
   const kept = (l: Ledger) => (l.compressions === 0 ? '—' : `${l.compressions}× · ${size(l.rawChars)} → ${size(l.keptChars)} chars · ≈${size((l.rawChars - l.keptChars) / 4)} tokens kept out of context`)
   const cache = (l: Ledger) => {
     const rate = cacheHitRate(l)
@@ -1148,7 +1230,7 @@ async function runRouter($: $, args: string, cfg: Config): Promise<{ text: strin
       const r = await read($, route)
       return {
         text: [
-          `model-router: ready — ${cfg.mode === 'crew' ? `crew, ${NAME[cfg.orchestrator]} orchestrates` : `route mode, from ${model}`}`,
+          `model-router: ready — ${cfg.mode === 'crew' ? `crew, ${(await crewLabel($, cfg)).text} orchestrates` : `route mode, from ${model}`}`,
           `style ${current} · compression ${cfg.compress ? 'on' : 'off'}${cfg.useRtk && (await rtk) ? ' (rtk)' : ''} · effort ${cfg.effortMode} · ultracode ${cfg.ultracode} · learning ${cfg.adapt ? 'on' : 'off'}`,
           r === null ? 'not routed yet — the next prompt is routed.' : `current route: ${describe(r)}.`,
           'Type `/router-help` for every command and what it is for.',
@@ -1304,11 +1386,12 @@ async function runRouter($: $, args: string, cfg: Config): Promise<{ text: strin
       const tier = await baseTier($, cfg)
       const tokens = usage?.tokens ?? (await read($, context))
       const threshold = cfg.compactAt[tier]
-      const due = tokens >= threshold ? ' — due now' : ` — next at ${size(threshold)}`
+      const at = (n: number) => (Number.isFinite(n) ? size(n) : 'off')
+      const due = !Number.isFinite(threshold) ? ' — off for this tier' : tokens >= threshold ? ' — due now' : ` — next at ${size(threshold)}`
       return {
         text: [
           `model-router compact — auto ${cfg.compactAuto ? 'on' : 'off'}${(await read($, compactOff)) ? ' (off this session)' : ''} (model ${NAME[cfg.compactModel]})`,
-          `thresholds: Sonnet ${size(cfg.compactAt.sonnet)} · Opus ${size(cfg.compactAt.opus)} · Haiku ${size(cfg.compactAt.haiku)} · Fable ${size(cfg.compactAt.fable)} tokens`,
+          `thresholds: Sonnet ${at(cfg.compactAt.sonnet)} · Opus ${at(cfg.compactAt.opus)} · Haiku ${at(cfg.compactAt.haiku)} · Fable ${at(cfg.compactAt.fable)} tokens`,
           `context: ${size(tokens)} on ${NAME[tier]}${due}`,
           'The summary is lossy; `/router-compact off` disables it for this session, `now` compacts immediately.',
         ].join('\n'),
@@ -1337,7 +1420,9 @@ export const register: Register = (on, options) => {
   const key = String(options.layaApiKey ?? '')
   const cfg: Config = {
     mode: pick(options.mode, ['route', 'crew'] as const, 'crew'),
-    orchestrator: pick(options.orchestrator, ['haiku', 'sonnet', 'opus', 'session'] as const, 'sonnet'),
+    // The session's own /model by default: no model is ever swapped under the person, and nothing reads as an
+    // override. A fixed tier is the person's choice (a Sonnet orchestrator on a Haiku session is a paid upgrade).
+    orchestrator: pick(options.orchestrator, ['haiku', 'sonnet', 'opus', 'session'] as const, 'session'),
     cache: CACHE[pick(options.cacheTtl, ['1h', '5m'] as const, '1h')],
     // Never `max` or `ultracode` as a router-sent effort: they become xhigh (Extra); Ultracode is the keyword switch.
     effort: Object.fromEntries(ORDER.map(t => [t, clampEffort(options[`${t}Effort`], EFFORT[t])])) as Record<Tier, Effort>,
@@ -1349,13 +1434,14 @@ export const register: Register = (on, options) => {
     crewJudge: flag(options.crewJudge, false),
     compactAuto: flag(options.compactAuto, true),
     compactModel: pick(options.compactModel, ['haiku', 'sonnet', 'opus'] as const, 'haiku'),
+    // 0 turns a tier's auto-compact off, as the setting says (it used to fall back to the default).
     compactAt: {
-      haiku: Number(options.compactHaikuAt ?? 600_000) || 600_000,
-      sonnet: Number(options.compactSonnetAt ?? 400_000) || 400_000,
-      opus: Number(options.compactOpusAt ?? 400_000) || 400_000,
-      fable: Number(options.compactFableAt ?? 400_000) || 400_000,
+      haiku: tokenThreshold(options.compactHaikuAt, 600_000),
+      sonnet: tokenThreshold(options.compactSonnetAt, 400_000),
+      opus: tokenThreshold(options.compactOpusAt, 400_000),
+      fable: tokenThreshold(options.compactFableAt, 400_000),
     } as Record<Tier, number>,
-    compactKeep: Math.max(0, Number(options.compactKeep ?? 4) || 4),
+    compactKeep: count(options.compactKeep, 4),
     compactInstructions: String(options.compactInstructions ?? ''),
     ultracode: pick(options.ultracode, ['suggest', 'auto', 'off'] as const, 'suggest'),
     adapt: pick(options.adapt, ['on', 'off'] as const, 'on') === 'on',
@@ -1371,8 +1457,6 @@ export const register: Register = (on, options) => {
   }
   // Crew spawns in flight, by tier: two Agent calls in one response must not both pass the check.
   const starting = new Set<Tier>()
-  // Set while the mod's own auto-compact runs, so its session.compact hook answers it.
-  let autoCompactRequested = false
   on('session.start', async ($, e, next) => {
     // Not awaited: startup never waits on a process.
     rtk = cfg.compress && cfg.useRtk
@@ -1503,7 +1587,8 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         {tabs}
         <Text bold>{manual ? 'off · /router on' : r === null ? 'not routed yet' : label}</Text>
-        <Text color={money < 0 ? 'yellow' : 'green'}>{l.baselineUsd === 0 ? 'saved —' : savingsText(money, name)}</Text>
+        <Text color={money < -0.0005 ? 'yellow' : Math.abs(money) < 0.0005 ? undefined : 'green'}>{l.baselineUsd === 0 ? 'saved —' : savingsText(money, name)}</Text>
+        {upgradeUsd(l) >= 0.0005 && <Text dimColor>{`${upgradeText(upgradeUsd(l), name)} (stronger models, by choice)`}</Text>}
         {ORDER.filter(t => l.turns[t] > 0).map(t => (
           <Text>
             {`${NAME[t].padEnd(7)}${'█'.repeat(Math.max(1, Math.round((l.turns[t] / total) * 12)))} ${l.turns[t]}`}
@@ -1689,33 +1774,29 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     const startedAt = await $.clock.now()
     if (e.agentId !== undefined) {
-      const result = yield* next(e)
+      const id = e.agentId
+      // A worker's every request goes out on its tier's model, whatever a setting or a resume left the loop on:
+      // worker-haiku is Haiku or it saves nothing.
+      const own = cfg.mode === 'crew' ? (await read($, workerTier).catch(() => ({}) as Record<string, Tier>))[id] : undefined
+      const sentStep = own !== undefined && tierOf(e.model) !== own ? { ...e, model: MODEL[own], effort: cfg.effort[own] } : e
+      const result = yield* next(sentStep)
       try {
         const base = await read($, sessionModel)
         const u = result.usage
-        const id = e.agentId
-        if (u !== null && (await read($, workers)).includes(id)) {
+        const isWorker = (await read($, workers)).includes(id)
+        if (u !== null && isWorker) {
           await cacheBill($, u)
           const prompt = promptOf(u)
           await update($, workerWarm, w => ({ ...w, [id]: { tokens: prompt, at: startedAt, first: w[id]?.first ?? prompt } }))
         }
-        if (u !== null && base !== null && (await read($, workers)).includes(id)) {
-          // A worker's request against the same request made by a subagent on the session's own model.
-          const answered = u.model || e.model
-          const actual = usd(answered, u, cfg.cache)
-          const would = usd(base, u, cfg.cache)
+        if (u !== null && base !== null && isWorker) {
+          // A worker's request against the same request made by a subagent on the session's own model. A worker on
+          // a stronger model than the session's is an upgrade, kept apart from the saving.
+          const answered = u.model || sentStep.model
+          const actual = usd(answered, u, cfg.workerCache)
+          const would = usd(base, u, cfg.workerCache)
           if (actual !== undefined && would !== undefined) {
-            // Routed by the model that answered: a worker on the session's own model saves nothing.
-            const routedStep = canonical(answered) === canonical(base) ? 0 : 1
-            await bill($, {
-              routedSteps: routedStep,
-              actualUsd: actual,
-              baselineUsd: would,
-              workerSteps: 1,
-              workerRoutedSteps: routedStep,
-              workerActualUsd: actual,
-              workerBaselineUsd: would,
-            })
+            await bill($, requestDelta(answered, base, actual, would, true))
           }
         }
       } catch {}
@@ -1784,7 +1865,9 @@ export const register: Register = (on, options) => {
           const actual = requestCost(answered, prompt, u.cache_read_input_tokens, u.output_tokens, cfg.cache)
           await update($, shadow, () => ({ tokens: prompt, at: startedAt }))
           if (baseline !== undefined && actual !== undefined) {
-            await bill($, { routedSteps: canonical(answered) === canonical(e.model) ? 0 : 1, actualUsd: actual, baselineUsd: baseline })
+            // On a stronger model than the session's own (an escalation, a Sonnet orchestrator on a Haiku session):
+            // an upgrade, shown apart, never as a routing loss.
+            await bill($, requestDelta(answered, e.model, actual, baseline))
           }
         }
       }
@@ -1836,7 +1919,7 @@ export const register: Register = (on, options) => {
       // Auto-compact: past the tier's threshold the session summarizes with the cheap
       // model, so the expensive model re-caches a short summary instead of the transcript.
       if (cfg.compactAuto && !(await read($, compactOff)) && !(await read($, compactPending))) {
-        const tokens = await $.session.usage().then(u => u.context.tokens, () => 0)
+        const tokens = await $.session.usage().then(u => u.context.tokens ?? 0, () => 0)
         const tier = await baseTier($, cfg)
         const stamp = await read($, compactStamp)
         const at = await $.clock.now()
@@ -1869,7 +1952,7 @@ export const register: Register = (on, options) => {
             ? `budget ${Math.min(999, Math.round((l.actualUsd / cap) * 100))}% used`
             : ''
       const savedTail = [
-        l.routedSteps > 0 ? savingsText(saved(l), await ownName($)) : '',
+        l.routedSteps > 0 ? moneyText(l, await ownName($)) : '',
         l.tokensSaved > 0 ? `≈${size(l.tokensSaved)} tok saved` : '',
       ].filter(Boolean).join(' · ')
       const budgetTail = budgetNote === '' || (text?.includes('budget') ?? false) ? '' : budgetNote
@@ -1916,6 +1999,7 @@ export const register: Register = (on, options) => {
         if (started.agentId !== undefined) {
           const id = started.agentId
           await update($, workers, w => [...w, id].slice(-50))
+          await update($, workerTier, m => Object.fromEntries([...Object.entries(m), [id, worker] as const].slice(-50)))
         }
         return started
       } finally {
@@ -2081,7 +2165,9 @@ export const register: Register = (on, options) => {
       added.push({ id: 'model-router:style', text, scope: 'session' as const })
     }
     if (cfg.mode === 'crew' && !isTeammate && e.tools.includes('Agent') && !(await read($, isManual))) {
-      added.push({ id: 'model-router:crew', text: crewSection(await orchestratorOf($, cfg), WORKERS, e.tools.includes('SendMessage')), scope: 'session' as const })
+      // A separate Haiku session for big independent jobs, where the app offers start_session (or may load it).
+      const sessions = e.tools.some(t => /(^|__)start_session$/.test(t))
+      added.push({ id: 'model-router:crew', text: crewSection(await orchestratorOf($, cfg), WORKERS, e.tools.includes('SendMessage'), { sessions, haikuModel: MODEL.haiku }), scope: 'session' as const })
     }
     return added.length === 0 ? composed : { sections: [...composed.sections, ...added] }
   })

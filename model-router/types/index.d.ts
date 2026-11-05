@@ -41,6 +41,16 @@ export type Ledger = {
   workerRoutedSteps: number
   workerActualUsd: number
   workerBaselineUsd: number
+  /**
+   * Requests on a stronger model family than the session's own (a Haiku session's work on Sonnet or Opus), and
+   * their cost and baseline: paid for quality, kept out of `saved` and shown apart. Included in the four above;
+   * the worker pair is the workers' share. Absent from ledgers written before 1.13 (read as 0).
+   */
+  upgradeSteps: number
+  upgradeActualUsd: number
+  upgradeBaselineUsd: number
+  workerUpgradeActualUsd: number
+  workerUpgradeBaselineUsd: number
   /** Re-routes the cost model allowed, and the ones it refused because the cache was worth more. */
   switches: number
   holds: number
@@ -145,6 +155,8 @@ declare module 'claude-code' {
       /** Crew workers by agent id, and the prompt size of each one's last and first request. */
       workers: string[]
       workerWarm: Record<string, { tokens: number; at: number; first: number }>
+      /** Crew workers' tiers by agent id: each request of a worker goes out on its tier's model. */
+      workerTier: Record<string, ModelTier>
       /** The line shown beneath the turn's answer. */
       note: string | null
       /** Crew: what follows the model in that line (`crew · no clear tier`); the model and effort are read from the request that ran. */

@@ -87,20 +87,22 @@ flowchart LR
 
 ## Crew mode: one orchestrator, three warm workers
 
-By default (`mode: crew`) the main session stays on one orchestrator model (Sonnet by default). It moves there once, at the first prompt, and never again, so its prompt cache is never thrown away. Work that takes several tool calls goes to long-lived workers:
+By default (`mode: crew`) the main session stays on your `/model` (`orchestrator: session`) for the whole conversation and never switches, so its prompt cache is never thrown away (a mid-conversation switch re-writes the whole conversation into another model's cache at 2x input). Work that takes several tool calls goes to long-lived workers:
 
 | Worker | Model | Gets |
 |---|---|---|
-| `worker-haiku` | Haiku 5.5 | searching and reading code, summaries, running commands, mechanical edits |
+| `worker-haiku` | Haiku 5.5 | mechanical work with a large input: searching and reading code, summarizing files or logs, running commands and reporting, edits with exact instructions; never debugging, design, security, decisions or reviews |
 | `worker-sonnet` | Sonnet 5.5 | clear features and fixes, tests, refactors |
 | `worker-opus` | Opus 5.5 | unclear bugs, architecture, security and performance analysis |
 
 Each worker keeps its context between tasks: after its first task the orchestrator sends it the next one with `SendMessage` (a finished worker resumes where it was). Workers do the task themselves (they cannot start agents) and answer with a report of at most 10 lines: paths with line numbers, the command that checks it, what is open. The orchestrator is told to name files rather than paste them into a hand-off, never to read a worker's output file, and to do work of two tool calls or less itself, since a hand-off and a report cost two of its own requests.
 
-- The local rules still read every prompt. One that needs a **stronger** model than the orchestrator reaches it with a one-line hint to hand it over if it takes three or more tool calls. `!haiku …` / `!opus …` delegate the whole prompt; `!fable …` goes to `worker-opus`, as there is no Fable worker.
+- The local rules still read every prompt (EN and PL; app wrappers such as `<system-reminder>`, `<task-notification>` and pasted terminal sessions are not read as the task). A **mechanical** Haiku task (`znajdź wszystkie użycia…`, `run the tests and report`, `przejrzyj logi`, a rename) reaches the orchestrator with a hint to hand it to `worker-haiku`, but only when the cost math says the hand-off is clearly cheaper: the task priced on the orchestrator (every tool call re-reads its context, every result stays in it) against two short orchestrator requests plus the worker's cold or warm start. A task of at most two tool calls, or one cheaper by less than 20% or a cent, stays with the orchestrator. Anything that reads as judgment (debug, why, architecture, security, decide, review, evaluate) never goes to Haiku. The orchestrator checks a worker's report before it builds on it.
+- One that needs a **stronger** model than the orchestrator gets a hint to hand it to that worker (`escalate: suggest` only names it). `!haiku …` / `!opus …` delegate the whole prompt; `!fable …` goes to `worker-opus`, as there is no Fable worker. Each worker request goes out on its own tier's model, whatever its loop asked for.
+- **Big independent jobs** (bulk translation of files, a pass over many files): where the app offers `start_session` (Claude Desktop), the orchestrator is told to propose a separate fresh session on Haiku with a short brief (goal, files, what "done" means), never a fork of the conversation; its result comes back to the main session.
 - If the model starts a second worker of the same model, the mod refuses and names the one to message, unless the old worker's context has grown or gone cold enough that a fresh one is cheaper. A spawn under another name (`worker-opus-2`) always gets past a worker that stopped answering.
 - `/router off` turns crew off for the session: no crew section, no spawn checks.
-- **When your `/model` is another tier**, every main-loop request goes out on the orchestrator anyway, and the app's own model label still shows your `/model`. The note beneath each answer, the pane and `/router` say so: `Sonnet·medium (overrides your Haiku) · crew · …`, named from the request that really went out. `orchestrator: session` keeps the main loop on your `/model` instead. A crew that costs more than your `/model` would have shows `extra ≈$X vs your Haiku`, never a negative saving, and `/router` splits the main loop from the workers.
+- **`orchestrator: haiku|sonnet|opus`** pins the main loop to that tier instead: when your `/model` is another tier every main-loop request goes out on it, and the note, the pane and `/router` say so (`Sonnet·medium (overrides your Haiku) · crew · …`).
 - **Follow-ups and hand-offs**: a short reply (`tak rób`, `Tak, etap 5`, `ok`) goes on with the worker the last task was handed to, by `SendMessage`, instead of being redone by the orchestrator. `/router log` records whether the orchestrator took each hand-off hint (`handoff` with `followed` true or false, `via` spawn or SendMessage). `crewJudge: true` sends what the rules cannot call to the judge.
 - `/router` counts each worker request against the same request on your own `/model`.
 
@@ -180,7 +182,7 @@ Shown when you install, and later under `/config`:
 | Setting | Default | |
 |---|---|---|
 | `mode` | `crew` | `route`: one session that switches models when the cache math pays, no workers |
-| `orchestrator` | `sonnet` | the main session's model in crew mode; another tier than your `/model` overrides it (and says so), `session` follows your `/model` |
+| `orchestrator` | `session` | the main session's model in crew mode: `session` keeps your `/model`; a tier overrides it (and says so), above your `/model` as a paid quality upgrade |
 | `escalate` | `auto` | `suggest`: only name a harder tier in the status line |
 | `style` | `terse` | `adhd`, `off` |
 | `compress` | `true` | Bash output compression |
@@ -205,7 +207,7 @@ Model ids per tier are at the top of [`model-router/hooks/register.ts`](model-ro
 
 ## FAQ
 
-**Is the "saved" figure real?** It is an estimate at list prices, and it covers routing only (compression is reported in tokens kept out of the context, and the shorter answers are not measured). Every main-loop request is priced twice: as it ran, and as it would have run on your own `/model` with that model's own cache, as if every request had gone there. So a switch's cache write counts against the savings, and so does re-warming your model after a routed stretch. The judge's cost is subtracted too. Crew workers are compared with the same requests on your `/model`. Subscription plans don't bill per token, but the same tokens count against your usage limits.
+**Is the "saved" figure real?** It is an estimate at list prices, and it covers routing only (compression is reported in tokens kept out of the context, and the shorter answers are not measured). Every main-loop request is priced twice: as it ran, and as it would have run on your own `/model` with that model's own cache, as if every request had gone there. So a switch's cache write counts against the savings, and so does re-warming your model after a routed stretch. The judge's cost is subtracted too. Crew workers are compared with the same requests on your `/model` (conservative: on your model the same work would also have grown the main context). **Savings and quality upgrades are kept apart**: work on a *stronger* model than your `/model` (an Opus worker or a Sonnet orchestrator on a Haiku session, an escalation) is paid on purpose for quality, so it shows as `quality +$X over your Haiku` (`↑$X` in the history), never as a red loss; `saved` counts only work on your model or a cheaper one, and a negative one (`extra ≈$X`) is a real routing loss. History records written before 1.13 keep their numbers, except Haiku sessions: nothing runs cheaper than Haiku, so their extra moves to the upgrade. Subscription plans don't bill per token, but the same tokens count against your usage limits.
 
 **Does compression break the prompt cache?** No. Output is shrunk once, before it is stored, so every later request sends the same small text and caches it normally.
 

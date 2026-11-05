@@ -54,6 +54,31 @@ const RULES: Rule[] = [
     'git operation',
   ],
   ['haiku', 2, re(String.raw`${S}(summari[sz]e|podsumuj|streść|stresc|tl;?dr)${E}`), 'summary'],
+  // Mechanical work with a large input: the reading is the work, not the judgment. Crew hands these to Haiku.
+  [
+    'haiku',
+    2.5,
+    re(
+      String.raw`${S}(find|search|grep|locate|list|znajdź|znajdz|wyszukaj|poszukaj|wylistuj|wypisz)${E}[^.!?\n]{0,30}${S}(where|which files?|all (the )?(usages?|uses|calls|occurrences|references)|usages?|occurrences|references|callers|gdzie|któr${L} plik${L}|ktor${L} plik${L}|wszystkie (użyci${L}|uzyci${L}|wystąpieni${L}|wystapieni${L}|wywołani${L}|wywolani${L}|miejsc${L})|użyci${L}|uzyci${L}|wystąpieni${L}|wystapieni${L})${E}|${S}(gdzie (jest|są|sa) (używan${L}|uzywan${L}|zdefiniowan${L}|wywoływan${L}|wywolywan${L})|where is [^.!?\n]{1,40} (used|defined|called))${E}`,
+    ),
+    'code search',
+  ],
+  [
+    'haiku',
+    2.5,
+    re(
+      String.raw`${S}(run|execute|uruchom|odpal|puść|pusc|wykonaj)${E}[^.!?\n]{0,40}${S}(tests?|testy|build|lint${L}|komend${L}|command${L}|script${L}|skrypt${L}|tsc|pytest|npm|cargo)${E}[^.!?\n]{0,40}${S}(report|tell me|show|list|summari[sz]e|powiedz|pokaż|pokaz|podaj|wypisz|zrelacjonuj|raport${L}|daj znać|daj znac)${E}`,
+    ),
+    'run and report',
+  ],
+  [
+    'haiku',
+    2.5,
+    re(
+      String.raw`${S}(przejrzyj|przeczytaj|przeskanuj|przeszukaj|streść|stresc|podsumuj|scan|read|go through|summari[sz]e|grep)${E}[^.!?\n]{0,30}${S}(log${L}|output|wynik${L}|stack ?trace${L})${E}`,
+    ),
+    'log scan',
+  ],
   ['haiku', 1.5, re(String.raw`${S}(napisz|write|draft|compose)${E}[^.!?\n]{0,30}${S}(artykuł|article|post|blog|opis|description|tekst|text|notatk${L}|note)${E}`), 'short prose'],
   // A quick lookup: one answer, no synthesis.
   [
@@ -131,7 +156,7 @@ const RULES: Rule[] = [
     'sonnet',
     3,
     re(
-      String.raw`${S}(translat${L}|przetłumacz${L}|port${L}|przepisz|rewrite|convert${L}|przekonwert${L})${E}[^"'“”„]{0,25}?(${S}(modules?|code|class(es)?|functions?|files?|programs?|services?|components?|librar${L}|kod${L}|moduł${L}|klas${L}|funkcj${L}|plik${L}|serwis${L}|bibliotek${L})${E}|${S}from (python|javascript|typescript|js|ts|go|golang|rust|java|kotlin|swift|ruby|php|c\+\+|c#|scala|elixir)${E})`,
+      String.raw`${S}(translat${L}|przetłumacz${L}|port${L}|przepisz|rewrite|convert${L}|przekonwert${L})${E}[^"'“”„]{0,25}?(${S}(modules?|code|class(es)?|functions?|programs?|services?|components?|librar${L}|kod${L}|moduł${L}|klas${L}|funkcj${L}|serwis${L}|bibliotek${L})${E}|[\w./\-]+\.(?:tsx?|jsx?|py|go|rs|java|rb|php|cs|kt|swift|cpp|c|h)${E}|${S}from (python|javascript|typescript|js|ts|go|golang|rust|java|kotlin|swift|ruby|php|c\+\+|c#|scala|elixir)${E})`,
     ),
     'code port',
   ],
@@ -400,12 +425,41 @@ function matches(pattern: RegExp, text: string): boolean {
 
 /** "znowu źle", "popraw to", "nie o to chodziło": the last answer missed, so the next one needs more capability. */
 export function isDissatisfied(text: string): boolean {
-  return DISSATISFIED.test(text)
+  return DISSATISFIED.test(clean(text))
+}
+
+// What the app wraps around or puts in place of the person's words: a reminder, a finished background task's
+// notice, a command's echo. Their vocabulary is the app's or a worker's report, never the task: a notice of a
+// finished task read as "security, 18 code files" sent it to Opus.
+const HARNESS = /<(system-reminder|task-notification|command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat)\b[^>]*>[\s\S]*?(<\/\1>|$)/gi
+const PASTED = /<pasted_content\b[^>]*>([\s\S]*?)(<\/pasted_content>|$)/gi
+// A pasted terminal session: a shell prompt line (`root@host:/opt# `, `PS C:\> `, `$ `).
+const SHELL = /^\s*(\S+@[\w.-]+:[^\n#$]*[#$] |PS [A-Za-z]:\\[^\n>]*> |\$ \S)/m
+
+/**
+ * The person's own words: the app's wrappers dropped, and a pasted terminal session too (its output is data:
+ * "migration plan" in a docker log is not a migration to plan). Pasted prose, a brief, stays: it is the task.
+ */
+export function clean(text: string): string {
+  return text
+    .replace(HARNESS, ' ')
+    .replace(PASTED, (_m, body: string) => (SHELL.test(body) ? ' ' : ` ${body} `))
+    .trim()
 }
 
 export function words(text: string): number {
-  const t = text.trim()
+  const t = clean(text)
   return t === '' ? 0 : t.split(/\s+/).length
+}
+
+// Work that is judgment, not reading: it never goes to Haiku, whatever else the prompt says.
+const JUDGMENT = re(
+  String.raw`${S}(debug${L}|zdebuguj|dlaczego|czemu|why|root cause|przyczyn${L}|diagnoz${L}|diagnos${L}|investigat${L}|architect${L}|architektur${L}|design|zaprojektuj|projekt systemu|security|bezpieczeństw${L}|bezpieczenstw${L}|vulnerab${L}|podatno${L}|auth${L}|uprawnie${L}|decide|decision${L}|decyzj${L}|zdecyduj|choose|wybierz|which (is|one|approach|option)|któr${L} (lepsz${L}|wybrać|wybrac)|ktor${L} (lepsz${L}|wybrac)|co lepsze|czy warto|czy powinien${L}|should (i|we)|evaluat${L}|assess${L}|oceń${L}|ocen${L}|review|przejrzyj kod|zrecenzuj|code review|recenzj${L}|trade-?offs?|plan${L}|zaplanuj|strateg${L}|optymaliz${L}|optimi[sz]${L}|performance|wydajno${L})${E}`,
+)
+
+/** Debugging, architecture, security, decisions or judging quality: never Haiku's, however mechanical it looks. */
+export function isJudgment(text: string): boolean {
+  return JUDGMENT.test(clean(text))
 }
 
 /**
@@ -416,8 +470,13 @@ export function isFollowUp(text: string, enableFable = false): boolean {
   if (isDissatisfied(text)) {
     return false
   }
-  const n = words(text)
-  return (n <= 8 && FOLLOW_UP.test(text)) || (n <= 3 && heuristic(text, enableFable) === undefined)
+  const own = clean(text)
+  const n = words(own)
+  // Nothing of the person's own (an app notice alone) continues nothing: it is no follow-up to a worker's task.
+  if (n === 0) {
+    return false
+  }
+  return (n <= 8 && FOLLOW_UP.test(own)) || (n <= 3 && heuristic(own, enableFable) === undefined)
 }
 
 // Labels that mean the task is genuinely hard: a "quick" in front of them does not make it a Haiku task.
@@ -437,9 +496,12 @@ const HARD = new Set([
   'production incident',
 ])
 
+// Mechanical reading and exact edits, whose size is a matter of steps, not of capability.
+const BULK = new Set(['code search', 'log scan', 'run and report', 'translation', 'rename', 'formatting', 'typo'])
+
 /** Scores a prompt locally, in microseconds and no tokens. Undefined when the signals are weak or conflict. */
 export function heuristic(text: string, enableFable: boolean, signals: Signals = {}): Verdict | undefined {
-  const t = text.slice(0, 4000)
+  const t = clean(text).slice(0, 4000)
   const score: Record<Tier, number> = { haiku: 0, sonnet: 0, opus: 0, fable: 0 }
   const why: string[] = []
   for (const [tier, weight, pattern, label] of RULES) {
@@ -498,7 +560,10 @@ export function heuristic(text: string, enableFable: boolean, signals: Signals =
   let tier = top
   let confidence = Math.min(0.95, 0.55 + 0.1 * best + 0.1 * margin)
   const hard = why.some(label => HARD.has(label))
-  if (matches(LARGE, t)) {
+  // "Find every usage in the whole repo" is more of the same reading, not harder work: its scope sizes the task
+  // (more steps for a worker), it does not lift the tier.
+  const bulk = tier === 'haiku' && why.some(label => BULK.has(label))
+  if (matches(LARGE, t) && !bulk) {
     const up = ORDER[Math.min(rank(tier) + 1, enableFable ? 3 : 2)]
     if (up !== undefined && rank(up) > rank(tier)) {
       tier = up

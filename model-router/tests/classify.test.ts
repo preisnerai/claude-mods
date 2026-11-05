@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { heuristic, isDissatisfied, isFollowUp, nextTier, parseJudge, parseJudgeVerdict, prevTier, rubric } from '../hooks/classify'
+import { clean, heuristic, isDissatisfied, isFollowUp, isJudgment, nextTier, parseJudge, parseJudgeVerdict, prevTier, rubric } from '../hooks/classify'
 
 // Prompts whose route is not a judgement call: a regression here is a bug, not a tuning question.
 const CRITICAL: [string, string | undefined][] = [
@@ -268,4 +268,36 @@ test('the judge answers a tier and a confidence, Fable folded into Opus when off
   expect(parseJudgeVerdict('no idea', false)).toBeUndefined()
   expect(rubric(false)).not.toContain('FABLE')
   expect(rubric(true)).toContain('FABLE')
+})
+
+test('app wrappers and pasted terminal sessions are not the task; a pasted brief is', () => {
+  expect(heuristic('<system-reminder>\nplan the architecture, security audit of auth\n</system-reminder>', false)).toBeUndefined()
+  expect(heuristic('<task-notification>\n<result>security review: root cause in 18 files a.ts b.ts c.ts d.ts</result>\n</task-notification>', false)).toBeUndefined()
+  expect(heuristic('\n\n<pasted_content id="1">\nroot@srv:/opt/psc# docker compose logs\nmigration plan step failed\n</pasted_content>', false)).toBeUndefined()
+  expect(heuristic('<pasted_content id="2">\nZaplanuj migrację bazy bez przestoju\n</pasted_content>', false)?.tier).toBe('opus')
+  expect(isFollowUp('<task-notification>done</task-notification>')).toBe(false)
+  expect(clean('tak <system-reminder>x</system-reminder> rób')).toBe('tak   rób')
+})
+
+test('mechanical reading is Haiku in both languages, and its scope does not lift the tier', () => {
+  for (const p of [
+    'znajdź wszystkie użycia parsePrice w całym repo',
+    'find all usages of parsePrice across the codebase',
+    'gdzie jest używana funkcja formatDate?',
+    'uruchom testy i powiedz co nie przechodzi',
+    'run the tests and report what fails',
+    'przejrzyj logi z serwera i wypisz błędy',
+    'przetłumacz wszystkie pliki w docs/ na angielski',
+  ]) {
+    expect({ p, tier: heuristic(p, false)?.tier }).toEqual({ p, tier: 'haiku' })
+  }
+})
+
+test('debugging, design, security, decisions and reviews are judgment, never Haiku work', () => {
+  for (const p of ['debug why the login fails', 'dlaczego to się wywala', 'zaprojektuj schemat bazy', 'oceń ten kod', 'which approach is better?', 'czy warto przejść na Postgres?', 'security audit of the api', 'zrób code review']) {
+    expect({ p, judgment: isJudgment(p) }).toEqual({ p, judgment: true })
+  }
+  for (const p of ['znajdź wszystkie użycia parsePrice', 'uruchom testy i podaj wynik', 'rename getUser to fetchUser']) {
+    expect({ p, judgment: isJudgment(p) }).toEqual({ p, judgment: false })
+  }
 })
