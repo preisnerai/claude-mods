@@ -9,6 +9,7 @@ import {
   clean,
   heuristic,
   isDissatisfied,
+  isEditTool,
   isFollowUp,
   isJudgment,
   layaQuestion,
@@ -20,14 +21,14 @@ import {
   rubric,
   words,
 } from './classify'
-import type { Verdict } from './classify'
+import type { Signals, Verdict } from './classify'
 import { MIN_CHARS, compress, familyOf, keepsSignal, rtkFilter } from './compress'
 import { CACHE, PRICES_VERSION, PROFILE, addLedger, cacheHitRate, cacheKey, cachedOf, canonical, dollars, emptyLedger, learn, mainSaved, moneyText, promptOf, requestCost, requestDelta, saved, savingsText, size, switchDelta, turnCost, upgradeText, upgradeUsd, usd, workerSaved, workerUpgradeUsd } from './cost'
 import { estimateTokens, summarize } from './compact'
 import type { Cache, LedgerDelta, Profile, Target } from './cost'
 import { dayRow, folderName, isEmptyDelta, ledgerSince, paneWidth, readHistoryText, relativeName, serializeHistory, sessionDetail, sessionRow, shiftOffset, shortRange, signedUsd, sourcesLine, statsText, subLine, summarizePeriod, trim, upsert } from './history'
 import type { Period } from './history'
-import { HANDOFF, WORKERS, crewSection, delegationHint, followUpHint, handoffPays, mechanicalProfile, tierOfWorker, workerName, workerSpec, workerType } from './crew'
+import { HANDOFF, WORKERS, crewSection, delegationHint, followUpHint, handoffPays, mechanicalProfile, retryHint, tierOfWorker, workerName, workerSpec, workerType } from './crew'
 import { STYLE, isStyle } from './style'
 import { explainDecision, lastDecision, lastUltracodeAfter } from './why'
 
@@ -143,6 +144,7 @@ const steps = atom({ plugin: 'model-router', key: 'steps' } as const, 0)
 const turnFirst = atom({ plugin: 'model-router', key: 'turnFirst' } as const, 0)
 const turnLast = atom({ plugin: 'model-router', key: 'turnLast' } as const, 0)
 const strikes = atom({ plugin: 'model-router', key: 'strikes' } as const, 0)
+const edited = atom({ plugin: 'model-router', key: 'edited' } as const, false)
 const lastCall = atom({ plugin: 'model-router', key: 'lastCall' } as const, null)
 const hasEscalated = atom({ plugin: 'model-router', key: 'hasEscalated' } as const, false)
 const style = atom({ plugin: 'model-router', key: 'style' } as const, null)
@@ -542,9 +544,18 @@ async function askJudge($: $, text: string, cfg: Config): Promise<Verdict | unde
     : { tier: parsed.tier, confidence: parsed.confidence, source: 'judge', why: 'judge' }
 }
 
+/**
+ * What the turn before this prompt left: its failed tools, its main-loop requests and whether it changed anything.
+ * Read as a prompt is submitted, before its own turn.start resets them; a prompt routed at turn.start passes a
+ * snapshot taken before the reset.
+ */
+async function signalsOf($: $): Promise<Signals> {
+  return { failedTools: await read($, strikes), lastTurn: { steps: await read($, steps), edited: await read($, edited) } }
+}
+
 /** Local rules first (no tokens, no wait); laya-serve or the Haiku judge only for what they cannot call. */
-async function classify($: $, text: string, cfg: Config): Promise<Verdict | undefined> {
-  const local = heuristic(text, cfg.enableFable, { failedTools: await read($, strikes) })
+async function classify($: $, text: string, cfg: Config, signals?: Signals): Promise<Verdict | undefined> {
+  const local = heuristic(text, cfg.enableFable, signals ?? (await signalsOf($)))
   if (local !== undefined) {
     return local
   }
@@ -730,11 +741,14 @@ async function baseTier($: $, cfg: Config): Promise<Tier> {
   return cfg.mode === 'crew' ? orchestratorOf($, cfg) : tierOf(await $.session.model()) ?? (await orchestratorOf($, cfg))
 }
 
-async function routePrompt($: $, text: string, cfg: Config): Promise<Verdict | undefined> {
+async function routePrompt($: $, text: string, cfg: Config, signals: Signals): Promise<Verdict | undefined> {
   const current = await read($, route)
-  if (isDissatisfied(text)) {
+  if (isDissatisfied(text, signals)) {
     const base = await baseTier($, cfg)
-    const up = nextTier(base, cfg.enableFable)
+    // One tier above the answer that missed, or the rules' own tier when they read the reply as harder still.
+    const ruled = heuristic(text, cfg.enableFable, signals)?.tier
+    const next = nextTier(base, cfg.enableFable)
+    const up = next !== undefined && ruled !== undefined && rank(ruled) > rank(next) ? ruled : next
     const tokens = await read($, context)
     const effort = current?.effort ?? ((await read($, baseEffort)) as Effort | null) ?? null
     if (up === undefined) {
@@ -757,7 +771,7 @@ async function routePrompt($: $, text: string, cfg: Config): Promise<Verdict | u
     }
     return apply($, { tier: up, confidence: 1, source: 'escalated', why: 'dissatisfied' }, cfg, text)
   }
-  if (current !== null && isFollowUp(text, cfg.enableFable)) {
+  if (current !== null && isFollowUp(text, cfg.enableFable, signals)) {
     await log($, 'route', {
       tier: current.tier,
       effort: current.effort,
@@ -793,7 +807,7 @@ async function routePrompt($: $, text: string, cfg: Config): Promise<Verdict | u
     })
     return undefined
   }
-  const verdict = await classify($, text, cfg)
+  const verdict = await classify($, text, cfg, signals)
   if (verdict === undefined) {
     await log($, 'unsure', {
       tier: current?.tier ?? tierOf(await $.session.model()) ?? null,
@@ -810,14 +824,18 @@ async function routePrompt($: $, text: string, cfg: Config): Promise<Verdict | u
   return apply($, verdict, cfg, text)
 }
 
-/** Routes one prompt as it enters: a forced tier, or the classifier's. Returns the text without its prefix. */
-async function enter($: $, text: string, forcedTier: Tier | null, cfg: Config, forcedWhy = 'forced', nudge = 0): Promise<Verdict | undefined> {
+/**
+ * Routes one prompt as it enters: a forced tier, or the classifier's. Returns the text without its prefix.
+ * `prior`: the turn before, when it was read before turn.start reset it (a prompt that waited for its turn).
+ */
+async function enter($: $, text: string, forcedTier: Tier | null, cfg: Config, forcedWhy = 'forced', nudge = 0, prior?: Signals): Promise<Verdict | undefined> {
   await update($, note, () => null)
+  const signals = prior ?? (await signalsOf($))
   if (forcedTier === null) {
-    return routePrompt($, text, cfg)
+    return routePrompt($, text, cfg, signals)
   }
   // A !tier or !+/!- over what the rules would pick is a correction, learned for that kind of task.
-  const ruled = heuristic(text, cfg.enableFable, { failedTools: await read($, strikes) })
+  const ruled = heuristic(text, cfg.enableFable, signals)
   if (nudge !== 0) {
     await correct($, cfg, await read($, category), 'tier', nudge)
   } else if (ruled !== undefined && ruled.tier !== forcedTier) {
@@ -888,7 +906,9 @@ function addressOf(a: AgentInfo): string {
  * for quality, under `escalate: auto` (`suggest` only names it). A mechanical Haiku task (search, read, run and
  * report, exact edits): only when the cost math says the hand-off is clearly cheaper than doing it here
  * (`handoffPays`: a small task in a small context stays), and never debugging, design, security, decisions or
- * reviews. A short follow-up ("tak rób") goes on with the worker the last task went to. `midTurn`: typed while a turn runs.
+ * reviews. A short follow-up ("tak rób") goes on with the worker the last task went to. A reply that says the last
+ * answer missed ("znowu źle", or "nie działa" right after a turn that did work) goes one tier above whoever gave
+ * that answer, under `escalate: auto`. `midTurn`: typed while a turn runs.
  */
 async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Config, midTurn = false): Promise<string | undefined> {
   await update($, note, () => null)
@@ -899,21 +919,30 @@ async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Conf
   const session = await ownModel($)
   const orchestrates = `crew · ${label.text} orchestrates`
   const previous = await read($, crewTask)
-  const isFollow = forcedTier === null && isFollowUp(text, false)
+  const signals = await signalsOf($)
+  const isMiss = forcedTier === null && isDissatisfied(text, signals)
+  const isFollow = forcedTier === null && isFollowUp(text, false, signals)
   // There is no Fable worker: a forced !fable goes to the strongest worker there is, and says so.
   let asked: Tier | undefined
   let verdict: Verdict | undefined
   let source = forcedTier !== null ? 'forced' : 'rule'
   if (forcedTier !== null) {
     asked = forcedTier
+  } else if (isMiss) {
+    // One tier above whoever gave the answer that missed (the worker the last task went to, else the orchestrator),
+    // or the rules' own tier when higher. Past Opus the same worker goes on: its context holds the task.
+    const ruled = heuristic(text, false, signals)?.tier
+    const next = nextTier(previous?.tier ?? orchestrator, false) ?? previous?.tier
+    asked = next !== undefined && ruled !== undefined && rank(ruled) > rank(next) ? ruled : next
+    source = 'escalated'
   } else if (isFollow) {
     asked = previous?.tier
     source = 'follow-up'
   } else {
-    verdict = heuristic(text, false, { failedTools: await read($, strikes) })
+    verdict = heuristic(text, false, signals)
     if (verdict === undefined && cfg.crewJudge) {
       // What the rules cannot call goes to laya-serve or the Haiku judge, when the person turned that on.
-      verdict = await classify($, text, cfg)
+      verdict = await classify($, text, cfg, signals)
       source = verdict?.source ?? source
     }
     asked = verdict?.tier
@@ -922,20 +951,26 @@ async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Conf
   const isUp = tier !== undefined && rank(tier) > rank(orchestrator)
   // A cheaper worker than the orchestrator, unasked: only Haiku, only mechanical work, only when it pays.
   let down: { pays: boolean; why: string } | undefined
-  if (forcedTier === null && !isFollow && tier === 'haiku' && orchestrator !== 'haiku') {
+  if (forcedTier === null && !isFollow && !isMiss && tier === 'haiku' && orchestrator !== 'haiku') {
     down = await haikuHandoff($, text, verdict, orchestrator, cfg)
   }
   const wanted = tier !== undefined && tier !== orchestrator && (forcedTier !== null || isFollow || (isUp && cfg.escalate === 'auto') || down?.pays === true)
   if (tier === undefined || !wanted) {
     const why = isFollow
       ? 'follow-up'
-      : tier === undefined
-        ? 'no clear tier'
-        : down !== undefined
-          ? `haiku task, ${down.why}`
+      : isMiss
+        ? tier === undefined
+          ? 'dissatisfied, already at the strongest tier'
           : isUp
-            ? `${tier} task, consider !${tier}`
-            : `${tier} task, orchestrator handles it`
+            ? `dissatisfied, consider !${tier}`
+            : 'dissatisfied, orchestrator handles it'
+        : tier === undefined
+          ? 'no clear tier'
+          : down !== undefined
+            ? `haiku task, ${down.why}`
+            : isUp
+              ? `${tier} task, consider !${tier}`
+              : `${tier} task, orchestrator handles it`
     if (!isFollow) {
       // A new task the orchestrator keeps: a later "tak rób" follows it, not a worker's older one.
       await update($, crewTask, () => null)
@@ -964,7 +999,7 @@ async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Conf
   const address = live === undefined ? undefined : addressOf(live)
   const name = workerName(tier)
   const swap = asked === 'fable' ? ' (no Fable worker: the strongest one takes it)' : ''
-  const how = isFollow ? ' (follow-up)' : ''
+  const how = isFollow ? ' (follow-up)' : isMiss ? ' (dissatisfied)' : ''
   await update($, note, () => `model-router: ${label.text} · crew → ${name}${how}${swap}`)
   await update($, noteTail, () => `crew → ${name}${how}${swap}`)
   await update($, crewTask, () => ({ tier, worker: name }))
@@ -973,8 +1008,8 @@ async function delegation($: $, text: string, forcedTier: Tier | null, cfg: Conf
     await update($, pendingHandoff, () => ({ tier, worker: name, address: address ?? null, prompt: text.slice(0, 120) }))
   }
   await status($, `${orchestrates} · ${tier} task → ${name}${how}${swap}`)
-  await log($, 'delegate', { tier, forced: forcedTier !== null, followUp: isFollow, source, worker: name, orchestrator, from: tierOf(session) ?? null, session, ...(down === undefined ? {} : { why: down.why }), prompt: text.slice(0, 280) })
-  return isFollow ? followUpHint(tier, address) : delegationHint(tier, forcedTier !== null, address, verdict?.why)
+  await log($, 'delegate', { tier, forced: forcedTier !== null, followUp: isFollow, source, worker: name, orchestrator, from: tierOf(session) ?? null, session, ...(down !== undefined ? { why: down.why } : isMiss ? { why: 'dissatisfied' } : {}), prompt: text.slice(0, 280) })
+  return isMiss ? retryHint(tier, address) : isFollow ? followUpHint(tier, address) : delegationHint(tier, forcedTier !== null, address, verdict?.why)
 }
 
 /**
@@ -1711,7 +1746,7 @@ export const register: Register = (on, options) => {
       // overrides the session's /model when that is another tier), so a prompt typed during a turn takes its hint now.
       const hint = e.command === undefined ? await delegation($, text, forcedTier, cfg, e.turnId !== undefined) : undefined
       const ask = e.command === undefined && e.turnId === undefined && forcedTier === null
-        ? await ultracode($, text, heuristic(text, cfg.enableFable, { failedTools: await read($, strikes) }), cfg)
+        ? await ultracode($, text, heuristic(text, cfg.enableFable, await signalsOf($)), cfg)
         : text
       if (e.command === undefined) {
         await planTag($, text, e.turnId !== undefined, cfg)
@@ -1735,7 +1770,8 @@ export const register: Register = (on, options) => {
       const command = (await $.command.list()).find(c => c.name === e.command?.name)
       if (command !== undefined && e.command.name !== 'router') {
         if (command.source === 'user' || command.source === 'plugin') {
-          await enter($, `${e.command.args}\n(${command.description})`, null, cfg)
+          // Not judged against the last turn: the command's own description ("fix broken links") is no reply to it.
+          await enter($, `${e.command.args}\n(${command.description})`, null, cfg, undefined, 0, { failedTools: await read($, strikes) })
         } else {
           // Claude Code's own prompt commands (/code-review, /security-review, /init) and MCP prompts: no rule
           // reads them well, and they should not inherit the last prompt's cheaper tier. Your /model runs them.
@@ -1753,10 +1789,13 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
+      // The turn that just ended, read before the reset: a prompt that waited behind it is judged against it.
+      const prior = await signalsOf($)
       await update($, steps, () => 0)
       await update($, turnFirst, () => 0)
       await update($, turnLast, () => 0)
       await update($, strikes, () => 0)
+      await update($, edited, () => false)
       await update($, lastCall, () => null)
       await update($, hasEscalated, () => false)
       await update($, lastStep, () => null)
@@ -1764,7 +1803,7 @@ export const register: Register = (on, options) => {
       const waiting = (await read($, queued)).find(q => q.text === e.text)
       if (waiting !== undefined && !(await read($, isManual))) {
         await update($, queued, q => q.filter(x => x !== waiting))
-        await enter($, waiting.text, waiting.tier, cfg, waiting.why, waiting.nudge)
+        await enter($, waiting.text, waiting.tier, cfg, waiting.why, waiting.nudge, prior)
         await planTag($, waiting.text, false, cfg)
       }
     }
@@ -2027,6 +2066,10 @@ export const register: Register = (on, options) => {
     }
     const result = await next(e)
     try {
+      // The turn changed something (a worker's edit counts too): a short "nie działa" next is about that change.
+      if (isEditTool(e.tool) && result.deny === undefined && result.isError !== true) {
+        await update($, edited, () => true)
+      }
       const r = e.agentId === undefined ? await read($, route) : null
       if (r !== null) {
         const call = JSON.stringify({ ...e, tool_use_id: undefined })
@@ -2104,6 +2147,17 @@ export const register: Register = (on, options) => {
       await update($, route, () => null)
       await update($, context, () => keep)
       await update($, queued, () => [])
+      // The new conversation has no turn before its first prompt: "nie działa" there reports a bug, it is no reply
+      // to the old conversation's last answer, and a "tak rób" follows no worker's old task.
+      await update($, steps, () => 0)
+      await update($, strikes, () => 0)
+      await update($, edited, () => false)
+      await update($, lastCall, () => null)
+      await update($, hasEscalated, () => false)
+      if (cfg.mode === 'crew') {
+        await followThrough($, false, `session ${e.reason}`)
+        await update($, crewTask, () => null)
+      }
       await shrinkCaches($, keep)
       if (e.reason === 'resume') {
         await update($, sessionModel, () => null)

@@ -434,6 +434,54 @@ test('a short follow-up goes on with the worker the last task went to', CREW, as
   expect(log.at(-1)).toMatchObject({ event: 'route', why: 'follow-up', decision: 'stays with the orchestrator' })
 })
 
+test('a miss right after a turn of work goes to a worker one tier above whoever gave the answer', CREW, async ($, on) => {
+  const w = world(on)
+  on('tool.call', () => ({ result: '' }) as never)
+  await start($)
+
+  // Before any work "nie działa" reports a bug: no tier of its own, no hand-off.
+  const report = await submit($, 'nie działa')
+  expect(report.context ?? []).toEqual([])
+
+  // The orchestrator (Sonnet) did the work and edited a file: the miss goes to worker-opus.
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/settings.tsx', old_string: 'a', new_string: 'b', tool_use_id: 'e1' } as never)
+  const miss = await submit($, 'źle to się wyświetla')
+  expect(miss.context?.at(-1)).toContain('The user says the last answer missed: hand this to worker-opus')
+  const log = await decisions($)
+  expect(log.at(-1)).toMatchObject({ event: 'delegate', source: 'escalated', worker: 'worker-opus', why: 'dissatisfied' })
+  expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5'])
+})
+
+test('after /clear a short "nie działa" is a bug report, not a miss of the old conversation', CREW, async ($, on) => {
+  world(on)
+  on('tool.call', () => ({ result: '' }) as never)
+  on('session.end', ($, e) => ({ sessionId: e.sessionId }))
+  await start($)
+
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+  await step($)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/settings.tsx', old_string: 'a', new_string: 'b', tool_use_id: 'e1' } as never)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} } as never)
+  const report = await submit($, 'nie działa logowanie po restarcie')
+  expect(report.context ?? []).toEqual([])
+  const log = await decisions($)
+  expect(log.at(-1)?.why).not.toBe('dissatisfied')
+})
+
+test('a new task that names a failure case is not a miss: no retry hint', CREW, async ($, on) => {
+  world(on)
+  await start($)
+
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+  await step($)
+  const task = await submit($, 'dodaj obsługę sytuacji, gdy API nie działa')
+  expect((task.context ?? []).join('\n')).not.toContain('the last answer missed')
+})
+
 test('a follow-up with no hand-off before it stays with the orchestrator', CREW, async ($, on) => {
   world(on)
   await start($)

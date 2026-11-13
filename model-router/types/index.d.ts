@@ -138,6 +138,8 @@ declare module 'claude-code' {
       turnLast: number
       /** Failed or repeated main-loop tool calls in a row. */
       strikes: number
+      /** A tool call since the turn in progress began changed a file or a page (Edit, Write, an MCP write), a worker's included. */
+      edited: boolean
       lastCall: string | null
       /** The turn already escalated once (or nudged, under `escalate: suggest`). */
       hasEscalated: boolean

@@ -892,6 +892,101 @@ test('dissatisfaction escalates one tier above the current route', { options: { 
   expect((await router($, 'why')).text).toContain('dissatisfied')
 })
 
+test('a short "nie działa" right after a turn that edited escalates; after a turn that only answered it does not', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on)
+  on('tool.call', () => ({ result: '' }) as never)
+  await start($)
+
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+  // Nothing was changed and one request ran: "nie działa" is a short reply, not a verdict.
+  await submit($, 'nie działa')
+  await step($)
+  expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5'])
+
+  await $.turn.start({ text: 'Add a dark mode toggle to the settings page', turnId: 't2' })
+  await step($)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/settings.tsx', old_string: 'a', new_string: 'b', tool_use_id: 'e1' } as never)
+  await submit($, 'nie działa')
+  await step($)
+  expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'])
+  expect((await router($, 'why')).text).toContain('dissatisfied')
+})
+
+test('a reply that waited behind a turn of work is judged against that turn when its own turn starts', { options: { mode: 'route' } }, async ($, on) => {
+  // A Sonnet judge: without the snapshot of the turn before, the reply would go to it and stay on Sonnet.
+  const w = world(on, { judge: 'SONNET' })
+  await start($)
+
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+  await step($)
+  await $.prompt.submit({ text: 'źle to się wyświetla', wait: true, origin: { kind: 'composer' }, turnId: 't1' } as never)
+  await $.turn.start({ text: 'źle to się wyświetla', turnId: 't2' })
+  await step($)
+
+  expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'])
+  expect(w.judged.length).toBe(0)
+  expect((await router($, 'why')).text).toContain('dissatisfied')
+})
+
+test('an edit in an earlier turn does not carry over: a new turn starts with nothing edited', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on, { judge: 'SONNET' })
+  on('tool.call', () => ({ result: '' }) as never)
+  await start($)
+
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/settings.tsx', old_string: 'a', new_string: 'b', tool_use_id: 'e1' } as never)
+  // The next turn answers with one request and no tool: "nie działa" after it is no reply to the old edit.
+  await $.turn.start({ text: 'what does the toggle do?', turnId: 't2' })
+  await step($)
+  await submit($, 'nie działa')
+  await step($)
+
+  expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-sonnet-5-5'])
+  expect((await router($, 'why')).text).not.toContain('dissatisfied')
+})
+
+test('after /clear or /resume the first prompt has no turn before it: "nie działa" there is a bug report', { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on, { model: 'claude-sonnet-5-5', judge: 'SONNET' })
+  on('tool.call', () => ({ result: '' }) as never)
+  on('session.end', ($, e) => ({ sessionId: e.sessionId }))
+  await start($)
+
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+  await step($)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/settings.tsx', old_string: 'a', new_string: 'b', tool_use_id: 'e1' } as never)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} } as never)
+  await submit($, 'nie działa logowanie po restarcie')
+  await step($)
+  expect(w.sent.map(s => s.model).at(-1)).toBe('claude-sonnet-5-5')
+  expect((await router($, 'why')).text).not.toContain('dissatisfied')
+
+  await step($)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/login.ts', old_string: 'a', new_string: 'b', tool_use_id: 'e2' } as never)
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} } as never)
+  await submit($, "it doesn't work on mobile")
+  await step($)
+  expect(w.sent.map(s => s.model).at(-1)).toBe('claude-sonnet-5-5')
+  expect((await router($, 'why')).text).not.toContain('dissatisfied')
+})
+
+test("a skill's description is not read as a reply to the last turn", { options: { mode: 'route' } }, async ($, on) => {
+  const w = world(on, { model: 'claude-sonnet-5-5', judge: 'SONNET', commands: [{ name: 'links', description: 'Find and fix broken links in the docs', source: 'user' }] })
+  await start($)
+
+  await submit($, 'Add a dark mode toggle to the settings page')
+  await step($)
+  await step($)
+  await $.prompt.submit({ text: '/links docs/', wait: false, origin: { kind: 'composer' }, command: { name: 'links', args: 'docs/' } } as never)
+  await step($)
+
+  expect(w.sent.map(s => s.model)).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-sonnet-5-5'])
+  expect((await router($, 'why')).text).not.toContain('dissatisfied')
+})
+
 test('/router why explains a cache hold and the decision log lands on disk', { options: { mode: 'route' } }, async ($, on) => {
   const w = world(on)
   await start($)
