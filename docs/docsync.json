@@ -1,0 +1,195 @@
+{
+ "docs": {
+  "docs/00_INDEX.md": {
+   "covers": [
+    ".claude-plugin/marketplace.json",
+    ".github/workflows/test.yml",
+    "model-router/.claude-plugin/plugin.json",
+    "find-mod/.claude-plugin/plugin.json"
+   ],
+   "files": {
+    ".claude-plugin/marketplace.json": "e3ece1256fb141bd",
+    ".github/workflows/test.yml": "eee1e9843cd30ce7",
+    "find-mod/.claude-plugin/plugin.json": "b2add0948df5e443",
+    "model-router/.claude-plugin/plugin.json": "94222a1c784d173b"
+   },
+   "verified_at": "2026-11-13",
+   "verified_commit": "034ac0e"
+  },
+  "docs/01_PRZEGLAD.md": {
+   "covers": [
+    ".claude-plugin/marketplace.json",
+    ".github/workflows/test.yml",
+    "model-router/.claude-plugin/plugin.json",
+    "model-router/hooks/*.ts",
+    "model-router/hooks/*.tsx",
+    "model-router/hooks/hooks.json",
+    "find-mod/.claude-plugin/plugin.json",
+    "find-mod/hooks/*.ts",
+    "find-mod/hooks/*.tsx",
+    "find-mod/hooks/hooks.json"
+   ],
+   "files": {
+    ".claude-plugin/marketplace.json": "e3ece1256fb141bd",
+    ".github/workflows/test.yml": "eee1e9843cd30ce7",
+    "find-mod/.claude-plugin/plugin.json": "b2add0948df5e443",
+    "find-mod/hooks/hooks.json": "ae69340778202da5",
+    "find-mod/hooks/install.test.ts": "14ecbd7388c985ce",
+    "find-mod/hooks/install.ts": "9d5657e6751cd7f5",
+    "find-mod/hooks/register.tsx": "8f8c39a8a71948b9",
+    "find-mod/hooks/search.test.ts": "76b606dda559fe04",
+    "find-mod/hooks/search.ts": "c8936bcb548e40ae",
+    "model-router/.claude-plugin/plugin.json": "94222a1c784d173b",
+    "model-router/hooks/adapt.ts": "153c76346d157d52",
+    "model-router/hooks/classify.ts": "48b45287839dfdbc",
+    "model-router/hooks/compact.ts": "fe0392db0be2e9e8",
+    "model-router/hooks/compress.ts": "eb88a20dee2d561f",
+    "model-router/hooks/cost.ts": "7aa6650fb139ddce",
+    "model-router/hooks/crew.ts": "2f56a17bc37ed94a",
+    "model-router/hooks/history.ts": "c4257b1d15bf450e",
+    "model-router/hooks/hooks.json": "d842d789476d6728",
+    "model-router/hooks/register.tsx": "3cd902def2a27793",
+    "model-router/hooks/style.ts": "af4e850b1d53682a",
+    "model-router/hooks/why.ts": "0b4a136b66ba96c7"
+   },
+   "verified_at": "2026-11-13",
+   "verified_commit": "034ac0e"
+  },
+  "docs/02_ARCHITEKTURA_BLUEPRINT.md": {
+   "covers": [
+    ".claude-plugin/marketplace.json",
+    ".github/workflows/test.yml",
+    "model-router/.claude-plugin/plugin.json",
+    "model-router/hooks/*.ts",
+    "model-router/hooks/*.tsx",
+    "model-router/hooks/hooks.json",
+    "find-mod/.claude-plugin/plugin.json",
+    "find-mod/hooks/*.ts",
+    "find-mod/hooks/*.tsx",
+    "find-mod/hooks/hooks.json"
+   ],
+   "files": {
+    ".claude-plugin/marketplace.json": "e3ece1256fb141bd",
+    ".github/workflows/test.yml": "eee1e9843cd30ce7",
+    "find-mod/.claude-plugin/plugin.json": "b2add0948df5e443",
+    "find-mod/hooks/hooks.json": "ae69340778202da5",
+    "find-mod/hooks/install.test.ts": "14ecbd7388c985ce",
+    "find-mod/hooks/install.ts": "9d5657e6751cd7f5",
+    "find-mod/hooks/register.tsx": "8f8c39a8a71948b9",
+    "find-mod/hooks/search.test.ts": "76b606dda559fe04",
+    "find-mod/hooks/search.ts": "c8936bcb548e40ae",
+    "model-router/.claude-plugin/plugin.json": "94222a1c784d173b",
+    "model-router/hooks/adapt.ts": "153c76346d157d52",
+    "model-router/hooks/classify.ts": "48b45287839dfdbc",
+    "model-router/hooks/compact.ts": "fe0392db0be2e9e8",
+    "model-router/hooks/compress.ts": "eb88a20dee2d561f",
+    "model-router/hooks/cost.ts": "7aa6650fb139ddce",
+    "model-router/hooks/crew.ts": "2f56a17bc37ed94a",
+    "model-router/hooks/history.ts": "c4257b1d15bf450e",
+    "model-router/hooks/hooks.json": "d842d789476d6728",
+    "model-router/hooks/register.tsx": "3cd902def2a27793",
+    "model-router/hooks/style.ts": "af4e850b1d53682a",
+    "model-router/hooks/why.ts": "0b4a136b66ba96c7"
+   },
+   "verified_at": "2026-11-13",
+   "verified_commit": "034ac0e"
+  },
+  "docs/06_RUNBOOK_PRZEKAZANIE.md": {
+   "covers": [
+    ".claude-plugin/marketplace.json",
+    ".github/workflows/test.yml",
+    "model-router/.claude-plugin/plugin.json",
+    "find-mod/.claude-plugin/plugin.json",
+    "model-router/hooks/cost.ts",
+    "model-router/hooks/register.tsx",
+    "find-mod/hooks/register.tsx",
+    "model-router/tests/*.ts",
+    "find-mod/hooks/*.test.ts"
+   ],
+   "files": {
+    ".claude-plugin/marketplace.json": "e3ece1256fb141bd",
+    ".github/workflows/test.yml": "eee1e9843cd30ce7",
+    "find-mod/.claude-plugin/plugin.json": "b2add0948df5e443",
+    "find-mod/hooks/install.test.ts": "14ecbd7388c985ce",
+    "find-mod/hooks/register.tsx": "8f8c39a8a71948b9",
+    "find-mod/hooks/search.test.ts": "76b606dda559fe04",
+    "model-router/.claude-plugin/plugin.json": "94222a1c784d173b",
+    "model-router/hooks/cost.ts": "7aa6650fb139ddce",
+    "model-router/hooks/register.tsx": "3cd902def2a27793",
+    "model-router/tests/adapt.test.ts": "fe0928219fd8d925",
+    "model-router/tests/classify.test.ts": "2244f06b818ee9aa",
+    "model-router/tests/compact.test.ts": "7f52e76e2aa3b438",
+    "model-router/tests/compress.test.ts": "639df27ec7d5c6ea",
+    "model-router/tests/cost.test.ts": "0743260ee8db6d08",
+    "model-router/tests/crew.test.ts": "0a7ebf5644b870e9",
+    "model-router/tests/history.test.ts": "11bd324f88b04218",
+    "model-router/tests/router.test.ts": "78887723f2f864e4",
+    "model-router/tests/style.test.ts": "d039077b1869c88b",
+    "model-router/tests/why.test.ts": "355c5461224b31a9"
+   },
+   "verified_at": "2026-11-13",
+   "verified_commit": "034ac0e"
+  },
+  "docs/08_DOSTEPY.md": {
+   "covers": [
+    ".claude-plugin/marketplace.json",
+    ".github/workflows/test.yml",
+    "model-router/.claude-plugin/plugin.json",
+    "find-mod/hooks/install.ts"
+   ],
+   "files": {
+    ".claude-plugin/marketplace.json": "e3ece1256fb141bd",
+    ".github/workflows/test.yml": "eee1e9843cd30ce7",
+    "find-mod/hooks/install.ts": "9d5657e6751cd7f5",
+    "model-router/.claude-plugin/plugin.json": "94222a1c784d173b"
+   },
+   "verified_at": "2026-11-13",
+   "verified_commit": "034ac0e"
+  },
+  "docs/mapa_wizualna.html": {
+   "covers": [
+    ".claude-plugin/marketplace.json",
+    ".github/workflows/test.yml",
+    "model-router/.claude-plugin/plugin.json",
+    "model-router/hooks/*.ts",
+    "model-router/hooks/*.tsx",
+    "model-router/hooks/hooks.json",
+    "find-mod/.claude-plugin/plugin.json",
+    "find-mod/hooks/*.ts",
+    "find-mod/hooks/*.tsx",
+    "find-mod/hooks/hooks.json"
+   ],
+   "files": {
+    ".claude-plugin/marketplace.json": "e3ece1256fb141bd",
+    ".github/workflows/test.yml": "eee1e9843cd30ce7",
+    "find-mod/.claude-plugin/plugin.json": "b2add0948df5e443",
+    "find-mod/hooks/hooks.json": "ae69340778202da5",
+    "find-mod/hooks/install.test.ts": "14ecbd7388c985ce",
+    "find-mod/hooks/install.ts": "9d5657e6751cd7f5",
+    "find-mod/hooks/register.tsx": "8f8c39a8a71948b9",
+    "find-mod/hooks/search.test.ts": "76b606dda559fe04",
+    "find-mod/hooks/search.ts": "c8936bcb548e40ae",
+    "model-router/.claude-plugin/plugin.json": "94222a1c784d173b",
+    "model-router/hooks/adapt.ts": "153c76346d157d52",
+    "model-router/hooks/classify.ts": "48b45287839dfdbc",
+    "model-router/hooks/compact.ts": "fe0392db0be2e9e8",
+    "model-router/hooks/compress.ts": "eb88a20dee2d561f",
+    "model-router/hooks/cost.ts": "7aa6650fb139ddce",
+    "model-router/hooks/crew.ts": "2f56a17bc37ed94a",
+    "model-router/hooks/history.ts": "c4257b1d15bf450e",
+    "model-router/hooks/hooks.json": "d842d789476d6728",
+    "model-router/hooks/register.tsx": "3cd902def2a27793",
+    "model-router/hooks/style.ts": "af4e850b1d53682a",
+    "model-router/hooks/why.ts": "0b4a136b66ba96c7"
+   },
+   "verified_at": "2026-11-13",
+   "verified_commit": "034ac0e"
+  }
+ },
+ "exclude": [
+  "docs/**"
+ ],
+ "max_age_days": 90,
+ "project": "claude-mods",
+ "version": 1
+}
