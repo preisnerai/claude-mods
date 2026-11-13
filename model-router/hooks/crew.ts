@@ -102,6 +102,16 @@ export function followUpHint(tier: Tier, live: string | undefined): string {
   return `[model-router] Follow-up to the ${tier}-level task handed to ${name}: if ${name} did that work, send this on to it (${how}); otherwise do it yourself.`
 }
 
+/**
+ * The person says the last answer missed ("znowu źle", "nie działa" right after the work): a stronger worker takes
+ * it, told what was asked, what was done and what is still wrong.
+ */
+export function retryHint(tier: Tier, live: string | undefined): string {
+  const name = workerName(tier)
+  const how = live !== undefined ? `SendMessage to "${live}"` : `Agent tool, subagent_type "${workerType(tier)}", name "${name}"`
+  return `[model-router] The user says the last answer missed: hand this to ${name} (${how}) with what was asked, what was done and what is still wrong, then check its result before you answer.`
+}
+
 // ---- when a hand-off to Haiku pays ----------------------------------------------------------------------------
 
 /**

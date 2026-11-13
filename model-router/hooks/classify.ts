@@ -6,6 +6,8 @@ export type Verdict = { tier: Tier; confidence: number; source: Source; why: str
 export type Signals = {
   /** Failed or repeated tool calls in the turn before this prompt. */
   failedTools?: number
+  /** The main-loop turn before this prompt: its requests, and whether a tool call in it changed a file or a page. */
+  lastTurn?: { steps: number; edited: boolean }
 }
 
 export const ORDER: readonly Tier[] = ['haiku', 'sonnet', 'opus', 'fable']
@@ -33,6 +35,38 @@ const re = (src: string) => new RegExp(src, 'iu')
 
 type Rule = [tier: Tier, weight: number, pattern: RegExp, label: string]
 
+// Graphic work: what is laid out, not only written. "Zaprojektuj plakat" is this, not system design.
+const GRAPHIC = String.raw`(szablon${L}|ulotk${L}|ulotek|plakat${L}|baner${L}|banner${L}|grafik${L}|infografik${L}|prezentacj${L}|slajd${L}|wizytówk${L}|wizytowk${L}|wizytówek|wizytowek|makiet${L}|okładk${L}|okladk${L}|okładek|okladek|broszur${L}|gazetk${L}|gazetek|pdf${L}|templates?|flyers?|leaflets?|posters?|brochures?|banners?|graphics?|infographics?|presentations?|slides?|slide ?decks?|decks?|mock-?ups?|business cards?|pdfs?)`
+// Between a verb and the graphic it makes: at most three words, none a list, a summary or a translation of it.
+// "Zrób podsumowanie tego pdf-a", "make a list of all the templates" read or list, they make nothing.
+const NOT_MADE = String.raw`(?!${S}(list|lista|listy|listę|liste|liście|liscie|listą|lists|wykaz${L}|spis|spisu|podsumowa${L}|streszcz${L}|tłumacz${L}|tlumacz${L}|przekład${L}|przeklad${L}|summar${L}|translat${L}|overview)${E})`
+// A system around the graphic: "zaprojektuj system szablonów", "zaprojektuj generator pdf" is software design.
+const SYSTEM_WORD = String.raw`(system${L}|silnik${L}|generator${L}|engine${L}|platform${L}|architektur${L}|serwis${L}|services?|usług${L}|uslug${L}|moduł${L}|modul${L}|modules?|api|backend${L}|aplikacj${L}|apps?|bibliotek${L}|librar${L})`
+// "Czy" after a check is "whether": "zrób to lepiej i sprawdź czy działa" asks for no choice.
+const NOT_CHECK = String.raw`(?<!(?:sprawdź|sprawdz|sprawdza|sprawdzi|zobacz|zobaczy|upewnij się|upewnij sie|check|test|testuj)\s)`
+// "Lepiej X czy Y", "co lepsze", "czy warto", "X vs Y?", "which is better": asking for a choice is advice, never a
+// lookup. "Lepiej" opens the question ("lepiej X czy Y", "a może lepiej…"), it is not an adverb in a task ("sformatuj
+// to lepiej"). "vs" counts only in a question: "fix the dev vs prod mismatch" is a task.
+const CHOICE = String.raw`(?:^|[\n.,;:?!]\s*|${S}(?:co|czy|będzie|bedzie|jest|może|moze|chyba|raczej|a)\s+)lepiej${E}[^.!?\n]{0,60}${NOT_CHECK}${S}czy${E}|${NOT_CHECK}${S}czy lepiej${E}|${S}(co lepiej|co (jest |będzie |bedzie |byłoby |byloby )?lepsze|któr${L} (jest |będzie |bedzie )?lepsz${L}|ktor${L} (jest |bedzie )?lepsz${L}|czy warto|czy (się )?opłaca|czy (sie )?oplaca|co wybrać|co wybrac|which( one)?( is|['’]s| would be) better|what(['’]s| is) better|which (should|would) (i|we) (use|pick|choose|go with)|is it worth|worth it|pros and cons)${E}|${S}(vs\.?|versus)${E}[^.!?\n]{0,60}\?`
+// Where files live, as the object of a file operation. Singular "pliku" / "file" stay out: "przenieś funkcję do
+// nowego pliku", "move the logic to a new file" are code edits.
+const FILE_OBJECT = String.raw`(plik|pliki|plików|plikow|plikami|plikach|folder${L}|podfolder${L}|katalog${L}|podkatalog${L}|files|folders?|subfolders?|director(y|ies)|dirs?|zdjęci${L}|zdjec${L}|zdjęć|photos|images|dokumenty|documents|pobrane|downloads)`
+// A folder word that only qualifies another noun: "a directory service", "a folder picker" are code.
+const FOLDER_MODIFIER = String.raw`(?!\s+(service|services|picker|selector|chooser|browser|listing|watcher|path|paths|name|names|configurable)${E})`
+// Code around a file step makes it a code edit: components moved into their own files, imports updated, a
+// configurable directory, config copied to production.
+const CODE_CONTEXT = re(
+  String.raw`${S}(import${L}|komponent${L}|components?|hook${L}|package${L}|pakiet${L}|services?|serwis${L}|env|configurable|konfigurowaln${L}|apps?|application|aplikacj${L}|staging${L}|prod|production|produkcj${L}|deploy${L}|wdroż${L}|wdroz${L}|klas${L}|class(es)?|funkcj${L}|functions?|endpoint${L}|osobn${L} plik${L}|separate files|(their|its) own files)${E}`,
+)
+// What a destructive command clears away.
+const CLEARED = String.raw`(plik${L}|folder${L}|podfolder${L}|katalog${L}|podkatalog${L}|files?|folders?|director(y|ies)|dirs?|tmp|temp|cache|node_modules|dist|build|backup${L}|kopi${L} zapasow${L}|branch${L}|gałąź|gałęzi${L}|galaz|galezi${L})`
+// A delete, wipe or overwrite said on its own: next to a file step ("przenieś zdjęcia i skasuj je z telefonu",
+// "copy the files and overwrite the old ones") it makes that step one that cannot be undone.
+const DESTROY = new RegExp(
+  String.raw`${S}(usuń${L}|usun${L}|usuw${L}|skasuj${L}|kasuj${L}|kasow${L}|wyczyść|wyczysc|wyczyszcz${L}|nadpisz${L}|nadpisuj${L}|nadpisa${L}|wymaż|wymaz|delete|deleting|remove|removing|rm|wipe|wiping|overwrite|overwriting|erase|purge)${E}`,
+  'giu',
+)
+
 // English and Polish. A prompt scores per tier; the clear winner routes without a model call.
 const RULES: Rule[] = [
   // Quick, exact, low risk.
@@ -53,7 +87,14 @@ const RULES: Rule[] = [
     ),
     'git operation',
   ],
-  ['haiku', 2, re(String.raw`${S}(summari[sz]e|podsumuj|streść|stresc|tl;?dr)${E}`), 'summary'],
+  [
+    'haiku',
+    2,
+    re(
+      String.raw`${S}(summari[sz]e|podsumuj|streść|stresc|tl;?dr)${E}|${S}(zrób|zrob|przygotuj|napisz|daj|make|write|give me)${E}(?:\s+[^\s.!?]+)?\s+(podsumowani${L}|streszczeni${L}|summary)${E}`,
+    ),
+    'summary',
+  ],
   // Mechanical work with a large input: the reading is the work, not the judgment. Crew hands these to Haiku.
   [
     'haiku',
@@ -127,6 +168,15 @@ const RULES: Rule[] = [
     'simple browser',
   ],
   ['haiku', 1.5, re(String.raw`${S}(read|przeczytaj|show|pokaż|pokaz|open|otwórz|otworz)${E}[^.!?\n]{0,30}${S}(files?|plik${L}|note|notatk${L}|email|mail${L})${E}`), 'read a file'],
+  // Files and folders moved, copied, sorted or made: exact steps on the disk. A destructive one is not (below).
+  [
+    'haiku',
+    2.5,
+    re(
+      String.raw`${S}(utwórz|utworz|stwórz|stworz|zrób|zrob|załóż|zaloz|dodaj|create|make|add|set up)${E}(?:\s+[^\s.!?,]+){0,2}?\s+(folder${L}|podfolder${L}|katalog${L}|podkatalog${L}|folders?|subfolders?|director(y|ies)|dirs?)${E}${FOLDER_MODIFIER}|${S}(przenieś|przenies|przenoś|przenos|skopiuj|kopiuj|posortuj|sortuj|pogrupuj|uporządkuj|uporzadkuj|zmień nazw${L}|zmien nazw${L}|spakuj|rozpakuj|move|copy|sort|organi[sz]e|group|rename|zip|unzip)${E}[^.!?\n,]{0,30}${S}${FILE_OBJECT}${E}`,
+    ),
+    'file ops',
+  ],
 
   // Clear, bounded work.
   [
@@ -156,7 +206,7 @@ const RULES: Rule[] = [
     'sonnet',
     3,
     re(
-      String.raw`${S}(translat${L}|przetłumacz${L}|port${L}|przepisz|rewrite|convert${L}|przekonwert${L})${E}[^"'“”„]{0,25}?(${S}(modules?|code|class(es)?|functions?|programs?|services?|components?|librar${L}|kod${L}|moduł${L}|klas${L}|funkcj${L}|serwis${L}|bibliotek${L})${E}|[\w./\-]+\.(?:tsx?|jsx?|py|go|rs|java|rb|php|cs|kt|swift|cpp|c|h)${E}|${S}from (python|javascript|typescript|js|ts|go|golang|rust|java|kotlin|swift|ruby|php|c\+\+|c#|scala|elixir)${E})`,
+      String.raw`${S}(translat${L}|przetłumacz${L}|port${L}|przepisz|rewrite|convert${L}|przekonwert${L}|migrate|migrating|zmigruj${L}|zmigrow${L}|przemigruj${L})${E}[^"'“”„]{0,25}?(${S}(modules?|code|codebase|code base|class(es)?|functions?|programs?|services?|components?|librar${L}|kod${L}|moduł${L}|klas${L}|funkcj${L}|serwis${L}|bibliotek${L})${E}|[\w./\-]+\.(?:tsx?|jsx?|py|go|rs|java|rb|php|cs|kt|swift|cpp|c|h)${E}|${S}from (python|javascript|typescript|js|ts|go|golang|rust|java|kotlin|swift|ruby|php|c\+\+|c#|scala|elixir)${E})`,
     ),
     'code port',
   ],
@@ -199,9 +249,28 @@ const RULES: Rule[] = [
     'sonnet',
     1.5,
     re(
-      String.raw`${S}(write|draft|prepare|napisz|przygotuj|stwórz|stworz|zredaguj|zrób|zrob|make|utwórz|utworz)${E}[^.!?\n]{0,40}${S}(report${L}|raport${L}|proposal${L}|ofert${L}|document${L}|dokument${L}|specs?|specyfikacj${L}|presentation${L}|prezentacj${L}|plan${L})${E}`,
+      String.raw`${S}(write|draft|prepare|napisz|przygotuj|stwórz|stworz|zredaguj|zrób|zrob|make|utwórz|utworz)${E}(?:${NOT_MADE}[^.!?\n]){0,40}${S}(report${L}|raport${L}|proposal${L}|ofert${L}|document${L}|dokument${L}|specs?|specyfikacj${L}|presentation${L}|prezentacj${L}|plan${L})${E}`,
     ),
     'document work',
+  ],
+  // Templates, flyers, posters, PDFs, slides: layout and look are judgment, however many copies ("30 szablonów").
+  [
+    'sonnet',
+    3,
+    re(
+      String.raw`${S}(zrób|zrob|zróbcie|zrobcie|przygotuj|stwórz|stworz|utwórz|utworz|zaprojektuj|wygeneruj|generuj|narysuj|przerób|przerob|make|create|design|prepare|generate|build|draw|redo|produce)${E}(?:\s+${NOT_MADE}[^\s.!?]+){0,3}?\s+${GRAPHIC}${E}`,
+    ),
+    'design work',
+  ],
+  ['sonnet', 3, re(CHOICE), 'choice'],
+  // Deleting, wiping or overwriting files cannot be undone: never Haiku's, however exact the step.
+  [
+    'sonnet',
+    3,
+    re(
+      String.raw`${S}(usuń${L}|usun${L}|usuw${L}|skasuj${L}|kasuj${L}|wyczyść|wyczysc|wyczyszcz${L}|nadpisz${L}|nadpisuj${L}|wymaż|wymaz|delete|deleting|remove|removing|rm|wipe|wiping|overwrite|overwriting|erase|purge)${E}[^.!?\n]{0,40}${S}${CLEARED}${E}`,
+    ),
+    'destructive file op',
   ],
   [
     'sonnet',
@@ -297,7 +366,7 @@ const RULES: Rule[] = [
     'diagnosis',
   ],
   ['opus', 2.5, re(String.raw`${S}(flaky|intermittent${L}|sporadyczn${L}|race condition|deadlock${L}|memory leak|wyciek${L} pamięci|heisenbug|regression|regresj${L})${E}`), 'hard bug'],
-  ['opus', 2.5, re(String.raw`${S}(architect${L}|architektur${L}|system design|zaprojektuj|trade-?offs?|kompromis${L}|scal(e|es|ing|ability)|skalow${L})${E}`), 'architecture'],
+  ['opus', 2.5, re(String.raw`${S}(architect${L}|architektur${L}|system design|zaprojektuj(?!(?:\s+(?!${S}${SYSTEM_WORD}${E})[^\s.!?]+){0,2}\s+${GRAPHIC}${E})|trade-?offs?|kompromis${L}|scal(e|es|ing|ability)|skalow${L})${E}`), 'architecture'],
   ['opus', 1.5, re(String.raw`${S}(which|what) (of these|approach|design|option|architecture|pattern)${E}|${S}(które|który|która) (z tych|podejście|rozwiązanie)${E}`), 'choosing a design'],
   ['opus', 2, re(String.raw`${S}(security|bezpieczeństw${L}|bezpieczenstw${L}|vulnerab${L}|podatno${L}|threat model|pentest${L})${E}`), 'security'],
   // An audit is a security task only when it says so or names code: "zrób audyt kosztów" is a cost review.
@@ -406,8 +475,23 @@ const NEGATION = re(String.raw`${S}(nie|bez|don'?t|do not|dont|without|avoid|no|
 const SMALL = re(
   String.raw`${S}(quick|small|tiny|trivial|simple|one[- ]?line|one[- ]?liner|just|only|szybk${L}|drobny|drobna|prost${L}|jedn${L} linijk${L}|tylko)${E}`,
 )
+// Depth, stakes, a redesign: these lift the tier on their own.
 const LARGE = re(
-  String.raw`${S}(entire|whole|complete|full|every|all|end[- ]?to[- ]?end|e2e|production|prod|critical|thorough|deep|comprehensive|cał${L}|cal${L}|wszystk${L}|kompleksow${L}|dogłębn${L}|doglebn${L}|szczegółow${L}|szczegolow${L}|przeprojektuj|redesign)${E}`,
+  String.raw`${S}(end[- ]?to[- ]?end|e2e|production|prod|critical|thorough|deep|comprehensive|kompleksow${L}|dogłębn${L}|doglebn${L}|szczegółow${L}|szczegolow${L}|przeprojektuj|redesign)${E}`,
+)
+// "All", "every", "whole" size what is covered. They lift the tier only over a wide scope: "testy dla wszystkich
+// funkcji w utils.ts" is more of the same work in one file, "przepisz cały projekt" is not.
+const WHOLE_WORD = String.raw`(entire|whole|complete|full|every|each|all|cał${L}|cal(?:y|a|e|ą|ego|ej|ym|ymi|osc${L}|ość${L})|wszystk${L}|każd${L}|kazd${L})`
+const WHOLE = re(String.raw`${S}${WHOLE_WORD}${E}`)
+// A repository, a project, a codebase under the quantifier, within three words: "cały projekt", "w całym repo",
+// "all functions in the project". Named elsewhere ("W tym projekcie dodaj testy dla wszystkich funkcji w utils.ts")
+// it only says where the work is.
+const WIDE_SCOPE = re(
+  String.raw`${S}${WHOLE_WORD}${E}(?:\s+[^\s.!?]+){0,3}?\s+(repo${L}|repozytori${L}|repositor${L}|codebase|code base|monorepo${L}|projekt${L}|projekc${L}|projects?)${E}`,
+)
+// Wide when quantified: every file or module, the whole code, a whole document or report.
+const WIDE_SET = re(
+  String.raw`${S}${WHOLE_WORD}${E}(?:\s+[\p{L}\p{N}_-]+)??\s+(plik${L}|files?|moduł${L}|modul${L}|modules?|kod${L}|code|aplikacj${L}|app|application|dokument${L}|documents?|raport${L}|reports?|książk${L}|ksiazk${L}|books?)${E}`,
 )
 const FOLLOW_UP = re(
   String.raw`^\s*(ok(ay)?|yes|yep|yeah|sure|go( on| ahead)?|continue|proceed|do it|next|thanks?|tak|dobrze|dobra|jasne|dalej|kontynuuj|rób|zrób to|działaj|lecimy|następn${L}|i co\??|no i\??)${E}`,
@@ -415,6 +499,33 @@ const FOLLOW_UP = re(
 const DISSATISFIED = re(
   String.raw`${S}(znowu|znow|nadal|ciągle|ciagle|wciąż|wciaz|jeszcze raz|ponownie|again|still|once again)${E}[^.!?\n]{0,40}${S}(źle|zle|nie tak|nie działa|nie dziala|wrong|broken|fails?|nie o to|nie to|błąd${L}|blad${L}|to samo|no effect|nie ma efektu)${E}|${S}(nie o to chodzi(ło|lo)?|to nie to|that'?s not what i (asked|meant)|not what i (asked|meant)|popraw (?:to|tamto)(?:\s*(?:[.!?,]|$)| jeszcze raz)|popraw jeszcze raz|you broke|coś (się )?zepsuło|cos sie zepsulo)${E}`,
 )
+// A miss said without "znowu": "nie działa", "źle się wyświetla", "mi chodziło o", "miało być", "czemu … nie", a curse.
+// Only right after a turn that did something: before any work "nie działa logowanie" is a bug report.
+const MISSED = re(
+  String.raw`${S}(nie działa${L}|nie dziala${L}|nie zadziała${L}|nie zadziala${L}|dalej nie|nie tak|to nie to|nie o to|źle|zle|błędnie|blednie|niepoprawnie|nie otwiera${L}|nie wyświetla${L}|nie wyswietla${L}|nie pokazuje${L}|nie widać|nie widac|nie widzę|nie widze|mi chodziło|mi chodzilo|chodziło mi|chodzilo mi|miało być|mialo byc|miały być|mialy byc|miał być|mial byc|miała być|miala byc|zepsuł${L}|zepsul${L}|doesn['’]?t work|does not work|didn['’]?t work|did not work|not working|isn['’]?t working|broken|wrong|not what i (meant|asked|wanted)|that['’]?s not it|was supposed to|should have been|kurw${L}|cholera|kurde|pierdol${L}|wtf|ffs|fuck${L}|shit)${E}|${S}(czemu|dlaczego)${E}[^.!?\n]{0,60}${S}nie${E}|${S}why${E}[^.!?\n]{0,60}(${S}not${E}|n['’]t${E})`,
+)
+// The longest reply still read as a reaction to the last answer, not a new brief.
+const MISSED_WORDS = 25
+// Someone else's words in quotes (a UI message, a string to translate) are never the person's verdict. An apostrophe
+// inside a word ("doesn't") opens no quote.
+const QUOTED = /(?<![\p{L}\p{N}])'[^'\n]+'(?![\p{L}\p{N}])|"[^"\n]+"|„[^”"\n]+[”"]|“[^”\n]+”|‘[^’\n]+’|«[^»\n]+»|`[^`\n]+`/gu
+// Words that describe a task or a state, not a miss: a check asked for ("sprawdź czy nic się nie zepsuło", "make sure
+// nothing is broken"), praise ("nie jest źle"), a case to handle ("gdy API nie działa", "żeby źle wpisany NIP…"),
+// a suggestion ("why not use redis", "dlaczego nie dodać cache").
+const NOT_A_MISS = re(
+  String.raw`${S}(sprawdź|sprawdz|upewnij się|upewnij sie|zobacz|zweryfikuj|przetestuj|check|verify|confirm|make sure|ensure|test)${E}[,:]?\s+(czy|że|ze|whether|if|that|nothing|nic|everything|wszystko)${E}[^.!?\n;]*|${S}(nie jest (?:aż |az |wcale |tak )*(?:źle|zle)|not (?:too |that |so )?bad)${E}|${S}(gdy|jeśli|jesli|jeżeli|jezeli|żeby|zeby|aby|w razie|in case|unless|whenever|so that)${E}[^.!?\n,;]*|${S}(why not|why don['’]?t (?:we|i)|czemu nie|dlaczego nie)\s+(?:use|add|try|just|go|make|do|switch|move|put|keep|write|split|(?!wida[ćc]|słycha[ćc]|slycha[ćc])\p{L}+[ćc])${E}`,
+)
+// A new task opens the reply ("dodaj obsługę sytuacji, gdy API nie działa", "add a test that wrong passwords…",
+// "napraw broken links"): unless its verb points back at the answer ("napraw to", "fix it").
+const NEW_TASK = re(
+  String.raw`^\s*(?:(?:ok(?:ay)?|okej|dobra|dobrze|tak|yes|a|and|i|teraz|now|then|potem|następnie|nastepnie|jeszcze|also|też|tez)[,!\s]+)*(dodaj|add|napisz|write|obsłuż|obsluz|handle|napraw|fix|zaimplementuj|implement|stwórz|stworz|create|utwórz|utworz|zbuduj|build|przygotuj|prepare|uruchom|run|przetłumacz|przetlumacz|translate)${E}(?!\s+(?:to|it|this|that|tamto|tego|je|them)${E})`,
+)
+// Praise or thanks first, with no "but" after it: "działa, dzięki! a czemu wcześniej nie działało?" is curiosity.
+const PRAISED = re(
+  String.raw`^\s*(?:(?:teraz|now|już|juz|ok(?:ay)?|okej|no|o|it|that)[,!\s]+)*(działa|dziala|works|super|świetnie|swietnie|dzięki|dzieki|thanks|thank you|great|perfect|nice|idealnie|spoko|ekstra)${E}`,
+)
+const BUT = re(String.raw`${S}(ale|lecz|jednak|tylko że|tylko ze|but|however|still|nadal|dalej|wciąż|wciaz)${E}`)
+const NOT_A_MISS_ALL = new RegExp(NOT_A_MISS.source, 'giu')
 const STILL_TASK = re(String.raw`${S}(still|nadal|znowu|again|continue|dalej|fix|popraw|nie działa|nie dziala|wrong|źle|zle)${E}`)
 
 // A rule matches once; if the verb sits under a negation, the rule does not count.
@@ -423,9 +534,33 @@ function matches(pattern: RegExp, text: string): boolean {
   return m !== null && !NEGATION.test(text.slice(Math.max(0, m.index - 40), m.index))
 }
 
-/** "znowu źle", "popraw to", "nie o to chodziło": the last answer missed, so the next one needs more capability. */
-export function isDissatisfied(text: string): boolean {
-  return DISSATISFIED.test(clean(text))
+/**
+ * "znowu źle", "popraw to", "nie o to chodziło": the last answer missed, so the next one needs more capability.
+ * Given the turn before (`signals.lastTurn`), a short "nie działa", "źle się wyświetla" or "mi chodziło o" right
+ * after a turn that did work (more than one request, or an edit) reads as a miss too.
+ */
+export function isDissatisfied(text: string, signals: Signals = {}): boolean {
+  const own = clean(text)
+  if (DISSATISFIED.test(own)) {
+    return true
+  }
+  const last = signals.lastTurn
+  if (last === undefined || !(last.steps > 1 || last.edited) || words(own) > MISSED_WORDS) {
+    return false
+  }
+  if (NEW_TASK.test(own) || (PRAISED.test(own) && !BUT.test(own))) {
+    return false
+  }
+  return MISSED.test(own.replace(QUOTED, ' ').replace(NOT_A_MISS_ALL, ' '))
+}
+
+// Tools that change a file or a page. An MCP tool counts by its own name: `write_file`, `notion-update-page`.
+const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+const MCP_EDIT = /^mcp__.+__.*(write|edit|update|create|move|delete|rename|append|patch|insert|upload)/i
+
+/** Whether a tool call changes something on disk or in a document: what makes a turn one that "did work". */
+export function isEditTool(tool: string): boolean {
+  return EDIT_TOOLS.has(tool) || MCP_EDIT.test(tool)
 }
 
 // What the app wraps around or puts in place of the person's words: a reminder, a finished background task's
@@ -457,17 +592,20 @@ const JUDGMENT = re(
   String.raw`${S}(debug${L}|zdebuguj|dlaczego|czemu|why|root cause|przyczyn${L}|diagnoz${L}|diagnos${L}|investigat${L}|architect${L}|architektur${L}|design|zaprojektuj|projekt systemu|security|bezpieczeństw${L}|bezpieczenstw${L}|vulnerab${L}|podatno${L}|auth${L}|uprawnie${L}|decide|decision${L}|decyzj${L}|zdecyduj|choose|wybierz|which (is|one|approach|option)|któr${L} (lepsz${L}|wybrać|wybrac)|ktor${L} (lepsz${L}|wybrac)|co lepsze|czy warto|czy powinien${L}|should (i|we)|evaluat${L}|assess${L}|oceń${L}|ocen${L}|review|przejrzyj kod|zrecenzuj|code review|recenzj${L}|trade-?offs?|plan${L}|zaplanuj|strateg${L}|optymaliz${L}|optimi[sz]${L}|performance|wydajno${L})${E}`,
 )
 
+const CHOOSING = re(CHOICE)
+
 /** Debugging, architecture, security, decisions or judging quality: never Haiku's, however mechanical it looks. */
 export function isJudgment(text: string): boolean {
-  return JUDGMENT.test(clean(text))
+  const own = clean(text)
+  return JUDGMENT.test(own) || CHOOSING.test(own)
 }
 
 /**
  * A short reply that continues the work in progress ("ok", "dalej", "do it"): it keeps the current route. A short
  * prompt the rules do read ("debug flaky test", "rename foo bar") is a new task, not a follow-up.
  */
-export function isFollowUp(text: string, enableFable = false): boolean {
-  if (isDissatisfied(text)) {
+export function isFollowUp(text: string, enableFable = false, signals: Signals = {}): boolean {
+  if (isDissatisfied(text, signals)) {
     return false
   }
   const own = clean(text)
@@ -497,18 +635,52 @@ const HARD = new Set([
 ])
 
 // Mechanical reading and exact edits, whose size is a matter of steps, not of capability.
-const BULK = new Set(['code search', 'log scan', 'run and report', 'translation', 'rename', 'formatting', 'typo'])
+const BULK = new Set(['code search', 'log scan', 'run and report', 'translation', 'rename', 'formatting', 'typo', 'file ops'])
+// Labels that set a floor (Sonnet at least) rather than weigh the work: graphic work, a choice, a delete. Their size
+// ("30 szablonów", "wszystkie pliki tymczasowe") does not lift the tier, and they never outvote a hard label: "dlaczego
+// build się wywala po usunięciu folderu dist?" is a diagnosis, "lepiej mikroserwisy czy monolit?" architecture.
+const FLOOR = new Set(['design work', 'choice', 'destructive file op'])
+
+// Whether any unnegated delete, wipe or overwrite is in the text: "nie usuwaj, tylko przenieś pliki" has none.
+function destroys(text: string): boolean {
+  for (const m of text.matchAll(DESTROY)) {
+    const at = m.index ?? 0
+    if (!NEGATION.test(text.slice(Math.max(0, at - 40), at))) {
+      return true
+    }
+  }
+  return false
+}
 
 /** Scores a prompt locally, in microseconds and no tokens. Undefined when the signals are weak or conflict. */
 export function heuristic(text: string, enableFable: boolean, signals: Signals = {}): Verdict | undefined {
   const t = clean(text).slice(0, 4000)
   const score: Record<Tier, number> = { haiku: 0, sonnet: 0, opus: 0, fable: 0 }
-  const why: string[] = []
+  let votes: [tier: Tier, weight: number, label: string][] = []
   for (const [tier, weight, pattern, label] of RULES) {
     if (matches(pattern, t)) {
-      score[tier] += weight
-      why.push(label)
+      votes.push([tier, weight, label])
     }
+  }
+  const has = (label: string) => votes.some(v => v[2] === label)
+  const codeFiles = new Set(t.match(/[\w./\\-]+\.(?:tsx?|jsx?|py|go|rs|java|rb|php|cs|kt|swift|cpp|c|h)\b/gi) ?? []).size
+  const isFileOp = has('file ops')
+  // A file step among code (components into their own files, a configurable directory, config to production) is a
+  // code edit, not a chore on the disk.
+  if (isFileOp && (CODE_CONTEXT.test(t) || codeFiles > 0)) {
+    votes = votes.filter(v => v[2] !== 'file ops')
+  }
+  // A delete next to a file step, whatever it clears: "i skasuj je z telefonu", "and overwrite the old ones".
+  if (isFileOp && !has('destructive file op') && destroys(t)) {
+    votes.push(['sonnet', 3, 'destructive file op'])
+  }
+  const destructive = has('destructive file op')
+  if (votes.some(v => HARD.has(v[2]))) {
+    votes = votes.filter(v => !FLOOR.has(v[2]))
+  }
+  const why: string[] = votes.map(v => v[2])
+  for (const [tier, weight] of votes) {
+    score[tier] += weight
   }
 
   const n = words(t)
@@ -520,7 +692,6 @@ export function heuristic(text: string, enableFable: boolean, signals: Signals =
     score.opus += 1
     why.push('stack trace')
   }
-  const codeFiles = new Set(t.match(/[\w./\\-]+\.(?:tsx?|jsx?|py|go|rs|java|rb|php|cs|kt|swift|cpp|c|h)\b/gi) ?? []).size
   if (codeFiles >= 4) {
     score.opus += 2.5
     why.push(`${codeFiles} code files`)
@@ -538,6 +709,11 @@ export function heuristic(text: string, enableFable: boolean, signals: Signals =
   if ((signals.failedTools ?? 0) >= 3 && STILL_TASK.test(t)) {
     score.opus += 2.5
     why.push('tools failed before')
+  }
+  // A delete, wipe or overwrite in the task: its mechanical part is done with care, on Sonnet at least.
+  if (destructive) {
+    score.sonnet += score.haiku
+    score.haiku = 0
   }
   if (!enableFable) {
     score.opus += score.fable
@@ -560,10 +736,14 @@ export function heuristic(text: string, enableFable: boolean, signals: Signals =
   let tier = top
   let confidence = Math.min(0.95, 0.55 + 0.1 * best + 0.1 * margin)
   const hard = why.some(label => HARD.has(label))
-  // "Find every usage in the whole repo" is more of the same reading, not harder work: its scope sizes the task
-  // (more steps for a worker), it does not lift the tier.
-  const bulk = tier === 'haiku' && why.some(label => BULK.has(label))
-  if (matches(LARGE, t) && !bulk) {
+  // "Find every usage in the whole repo", "usuń wszystkie pliki tymczasowe", "plakat dla wszystkich oddziałów" are more
+  // of the same work, not harder work: their scope sizes the task (more steps for a worker), it does not lift the
+  // tier. A floor label with other work beside it lifts as that work does: "przepisz cały projekt i usuń stare pliki".
+  const flat = why.some(label => FLOOR.has(label)) && why.every(label => FLOOR.has(label) || BULK.has(label))
+  const bulk = (tier === 'haiku' && why.some(label => BULK.has(label))) || flat
+  // "All" or "every" lifts only over a wide scope (a repo, a project, every file or module) or two code files and more.
+  const wide = matches(LARGE, t) || matches(WIDE_SET, t) || matches(WIDE_SCOPE, t) || (matches(WHOLE, t) && codeFiles >= 2)
+  if (wide && !bulk) {
     const up = ORDER[Math.min(rank(tier) + 1, enableFable ? 3 : 2)]
     if (up !== undefined && rank(up) > rank(tier)) {
       tier = up

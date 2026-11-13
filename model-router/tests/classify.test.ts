@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { clean, heuristic, isDissatisfied, isFollowUp, isJudgment, nextTier, parseJudge, parseJudgeVerdict, prevTier, rubric } from '../hooks/classify'
+import { clean, heuristic, isDissatisfied, isEditTool, isFollowUp, isJudgment, nextTier, parseJudge, parseJudgeVerdict, prevTier, rubric } from '../hooks/classify'
 
 // Prompts whose route is not a judgement call: a regression here is a bug, not a tuning question.
 const CRITICAL: [string, string | undefined][] = [
@@ -169,6 +169,27 @@ const CORPUS: [string, string][] = [
   ['zaplanuj kolejne kroki', 'opus'],
   ['zaplanuj kolejne kroki rozwoju moda', 'opus'],
   ['zrób audyt bezpieczeństwa logowania', 'opus'],
+
+  // Graphic work, file and folder operations and choices, from the same log: before, the rules had no word for them.
+  ['zrób mi 30 nowych szablonów ulotek w pdf', 'sonnet'],
+  ['zrób mi 30 nowych szablonów, pdf umieść w podfolderze pdf', 'sonnet'],
+  ['Zaprojektuj plakat na festyn', 'sonnet'],
+  ['Design a poster for the conference', 'sonnet'],
+  ['Make a flyer for the open day', 'sonnet'],
+  ['zrób mi foldery na każdy miesiąc', 'haiku'],
+  ['Dobra to zrób mi foldery z projektami które mam', 'haiku'],
+  ['przenieś pliki do folderu archiwum', 'haiku'],
+  ['Create a folder for each month', 'haiku'],
+  ['usuń wszystkie pliki tymczasowe z folderu', 'sonnet'],
+  ['delete all temp files in the folder', 'sonnet'],
+  ['lepiej wykorzystać everos czy notion?', 'sonnet'],
+  ['co lepsze: notion czy obsidian?', 'sonnet'],
+  ['which is better, React or Vue?', 'sonnet'],
+  // "All" in one file is more of the same work; over a project or a repo it is wider work.
+  ['Dodaj testy jednostkowe dla wszystkich funkcji w utils.ts', 'sonnet'],
+  ['add tests for all endpoints in api.ts', 'sonnet'],
+  ['przepisz cały projekt na TypeScript', 'opus'],
+  ['refactor every module in the repo', 'opus'],
 ]
 
 test('the labelled corpus matches the route at least 85% of the time', async () => {
@@ -245,6 +266,178 @@ test('dissatisfaction is recognised and is not a follow-up', async () => {
   for (const text of ['popraw literówki', 'popraw to zdanie', 'napraw błąd logowania', 'translate this', 'streść raport']) {
     expect({ text, dissatisfied: isDissatisfied(text) }).toEqual({ text, dissatisfied: false })
   }
+})
+
+test('right after a turn that did work, a short miss without "znowu" is dissatisfaction; before any work it is a bug report', async () => {
+  const worked = { lastTurn: { steps: 4, edited: false } }
+  const editedOnce = { lastTurn: { steps: 1, edited: true } }
+  const idle = { lastTurn: { steps: 1, edited: false } }
+  const misses = [
+    'nie działa',
+    'źle to się wyświetla',
+    'nie działa kombinuj by to zrobić',
+    'te oferty nie otwierają mi się poprawnie',
+    'Mi chodziło o 30 RÓŻNIĄCYCH się od siebie szablonów, a ty zrobiłeś jeden',
+    'miało być na niebiesko',
+    'czemu pdf nie są w pdf',
+    "it doesn't work",
+    "that's not it",
+    'wrong file',
+    'nie ja to wrzucam na vps co ty kurwa',
+    'wtf',
+    'cholera, nie o to',
+  ]
+  for (const text of misses) {
+    expect({ text, worked: isDissatisfied(text, worked), edited: isDissatisfied(text, editedOnce) }).toEqual({ text, worked: true, edited: true })
+    expect({ text, follow: isFollowUp(text, false, worked) }).toEqual({ text, follow: false })
+  }
+  // No context, or a turn that only answered: "nie działa X" reports a bug, it is not a verdict on the last answer.
+  for (const text of ['nie działa', 'nie działa logowanie po restarcie', "it doesn't work", 'źle to się wyświetla', 'wrong file']) {
+    expect({ text, none: isDissatisfied(text), idle: isDissatisfied(text, idle) }).toEqual({ text, none: false, idle: false })
+  }
+  expect(isFollowUp('nie działa')).toBe(true)
+  // A long message is a new brief, whatever it starts with; a new task with no failure in it is no miss.
+  expect(isDissatisfied(`nie działa, ${'opiszę dokładnie co trzeba zrobić w tym module '.repeat(4)}`, worked)).toBe(false)
+  for (const text of ['Add a dark mode toggle to the settings page', 'tak rób', 'ok', 'why do you want to use redis here?']) {
+    expect({ text, dissatisfied: isDissatisfied(text, worked) }).toEqual({ text, dissatisfied: false })
+  }
+  // The old phrases still need no context.
+  expect(isDissatisfied('znowu źle', {})).toBe(true)
+})
+
+test('a turn did work when it edited a file or a page: Edit, Write, an MCP write', async () => {
+  for (const tool of ['Edit', 'Write', 'NotebookEdit', 'mcp__vault-praca__write_file', 'mcp__notion__notion-update-page']) {
+    expect({ tool, edit: isEditTool(tool) }).toEqual({ tool, edit: true })
+  }
+  for (const tool of ['Read', 'Grep', 'Bash', 'mcp__vault-praca__read_file', 'mcp__notion__notion-search']) {
+    expect({ tool, edit: isEditTool(tool) }).toEqual({ tool, edit: false })
+  }
+})
+
+test('graphic work is Sonnet, file and folder steps Haiku unless destructive, and a choice is advice', async () => {
+  for (const p of ['zrób mi 30 nowych szablonów ulotek w pdf', 'przygotuj grafikę na LinkedIn', 'Zaprojektuj plakat na festyn', 'wygeneruj pdf-y z ofert', 'create a slide deck for the board']) {
+    expect({ p, tier: heuristic(p, false)?.tier }).toEqual({ p, tier: 'sonnet' })
+  }
+  for (const p of ['zrób mi foldery na każdy miesiąc', 'skopiuj te pliki do nowego folderu', 'posortuj pliki w folderze Pobrane według daty', 'move these files to the archive folder']) {
+    expect({ p, tier: heuristic(p, false)?.tier }).toEqual({ p, tier: 'haiku' })
+  }
+  // A delete, wipe or overwrite is never auto-Haiku, even next to an exact file step, and its size does not lift it.
+  for (const p of ['usuń wszystkie pliki tymczasowe z folderu', 'skasuj folder dist', 'nadpisz pliki w folderze build', 'rm -rf node_modules', 'wipe the cache folder', 'przenieś pliki do archiwum i usuń stare foldery']) {
+    expect({ p, tier: heuristic(p, false)?.tier }).toEqual({ p, tier: 'sonnet' })
+  }
+  // A plain "usuń" in a sheet is still one exact step; a code move into a new file is not a file operation.
+  expect(heuristic('Usuń duplikaty w tym CSV', false)?.tier).toBe('haiku')
+  expect(heuristic('przenieś funkcję do nowego pliku', false)?.tier).not.toBe('haiku')
+  for (const p of ['lepiej wykorzystać everos czy notion?', 'co lepsze: notion czy obsidian?', 'czy warto przejść na Postgres?', 'Postgres vs MySQL for this app?', 'which is better, React or Vue?']) {
+    expect({ p, tier: heuristic(p, false)?.tier, judgment: isJudgment(p) }).toEqual({ p, tier: 'sonnet', judgment: true })
+  }
+  // "vs" inside a task is not a choice; a choice of design is still architecture.
+  expect(heuristic('fix the dev vs prod config mismatch', false)?.why ?? '').not.toContain('choice')
+  expect(heuristic('Which of these two designs scales better?', false)?.tier).toBe('opus')
+})
+
+test('the new floor labels never let a delete reach Haiku, never block a lift and never outvote a hard label', async () => {
+  const tier = (p: string) => heuristic(p, false)?.tier
+  // A delete or overwrite next to a file step, whatever it clears ("je", "the old ones", "duplikaty"): Sonnet.
+  for (const p of [
+    'copy the config files to prod and overwrite the old ones',
+    'przenieś pliki do archiwum i nadpisz istniejące',
+    'move the files to backup, overwriting existing ones',
+    'posortuj pliki w Pobranych i usuń duplikaty',
+    'move the photos to the NAS and delete them from the laptop',
+    'przenieś zdjęcia na dysk i skasuj je z telefonu',
+    'skopiuj pliki na pendrive, a potem wyczyść oryginały',
+    'zrób foldery na każdy miesiąc i usuń puste',
+    'rename the files and remove the originals',
+  ]) {
+    expect({ p, tier: tier(p) }).toEqual({ p, tier: 'sonnet' })
+  }
+  // A delete beside wide work lifts as that work does.
+  for (const p of ['przepisz cały projekt na TypeScript i usuń stare pliki js', 'refactor every module in the repo and delete the old files', 'migrate the whole codebase to ESM and remove the build folder']) {
+    expect({ p, tier: tier(p) }).toEqual({ p, tier: 'opus' })
+  }
+  // A diagnosis, a design of software, a hard choice stay Opus, whatever delete, template or choice is in them.
+  for (const p of [
+    'dlaczego build się wywala po usunięciu folderu dist?',
+    'why does the app crash when I delete a file?',
+    'zaprojektuj system szablonów e-mail dla platformy multi-tenant',
+    'zaprojektuj architekturę mikroserwisów i przygotuj prezentację dla zarządu',
+    'zaprojektuj architekturę generatora pdf',
+    'lepiej mikroserwisy czy monolit dla naszej architektury?',
+    'czy lepiej użyć mutexa czy kanału, żeby uniknąć race condition?',
+  ]) {
+    expect({ p, tier: tier(p) }).toEqual({ p, tier: 'opus' })
+  }
+  // Code moved into files or a configurable directory is a code edit, not a chore on the disk.
+  for (const p of [
+    'przenieś komponenty do osobnych plików',
+    'move the hooks into separate files and update the imports',
+    'move the utility files into a shared package and update all imports',
+    'make the directory configurable via an env var',
+    'create a directory service in Go with LDAP sync',
+    'set up the folder structure for a new Next.js app with auth and i18n',
+  ]) {
+    expect({ p, tier: tier(p) }).not.toEqual({ p, tier: 'haiku' })
+  }
+  // Graphic work is Sonnet however many copies; a list, a summary or a translation of a PDF makes nothing.
+  for (const p of ['zrób projekt plakatu dla wszystkich oddziałów', 'przygotuj projekt ulotki dla wszystkich klientów', 'make a slide deck summarizing all projects this quarter']) {
+    expect({ p, tier: tier(p) }).toEqual({ p, tier: 'sonnet' })
+  }
+  for (const p of ['make a list of all the templates in the repo', 'zrób listę wszystkich szablonów w repo']) {
+    expect({ p, tier: tier(p) }).not.toEqual({ p, tier: 'opus' })
+  }
+  for (const p of ['zrób podsumowanie tego pdf-a', 'przygotuj tłumaczenie prezentacji na angielski']) {
+    expect({ p, tier: tier(p) }).toEqual({ p, tier: 'haiku' })
+  }
+  // "Lepiej" as an adverb and "sprawdź czy" ask for no choice.
+  for (const p of ['sformatuj ten plik lepiej i sprawdź czy lint przechodzi', 'przetłumacz to lepiej i sprawdź czy brzmi naturalnie']) {
+    expect({ p, tier: tier(p), why: heuristic(p, false)?.why.includes('choice') }).toEqual({ p, tier: 'haiku', why: false })
+  }
+  // "W tym projekcie", "in this project" only say where the work is: one file under "all" is not lifted.
+  for (const p of ['W tym projekcie dodaj testy jednostkowe dla wszystkich funkcji w utils.ts', 'In this project, add tests for all endpoints in api.ts', 'w repo backend dodaj testy dla wszystkich funkcji w utils.ts']) {
+    expect({ p, tier: tier(p) }).toEqual({ p, tier: 'sonnet' })
+  }
+})
+
+test('after a turn of work, quotes, checks, praise and new tasks that name a failure are no miss', async () => {
+  for (const lastTurn of [{ steps: 4, edited: true }, { steps: 3, edited: false }]) {
+    for (const text of [
+      "translate 'wrong password' into German",
+      'uruchom testy i sprawdź czy nic się nie zepsuło',
+      'run the tests and make sure nothing is broken',
+      'nie jest źle, teraz dodaj eksport do CSV',
+      "it works now, why didn't it before?",
+      "dodaj komunikat 'Coś poszło nie tak' do formularza logowania",
+      'teraz dodaj walidację, żeby źle wpisany NIP pokazywał błąd',
+      'add a test that wrong passwords are rejected',
+      'napraw broken links w README',
+      'dodaj obsługę sytuacji, gdy API nie działa',
+      'ok, teraz obsłuż przypadek gdy plik nie otwiera się',
+      'why not use redis instead?',
+    ]) {
+      expect({ text, lastTurn, miss: isDissatisfied(text, { lastTurn }) }).toEqual({ text, lastTurn, miss: false })
+    }
+  }
+  // A fix pointed back at the answer is still a miss.
+  expect(isDissatisfied('napraw to, nie działa', { lastTurn: { steps: 3, edited: true } })).toBe(true)
+})
+
+test('"all" and "every" lift the tier only over a wide scope or several code files', async () => {
+  // More of the same work in one file: no lift.
+  for (const p of ['Dodaj testy jednostkowe dla wszystkich funkcji w utils.ts', 'add tests for all endpoints in api.ts', 'popraw cały tekst tego maila']) {
+    const v = heuristic(p, false)
+    expect({ p, tier: v?.tier, large: v?.why.includes('large scope') }).toEqual({ p, tier: v?.tier, large: false })
+    expect({ p, tier: v?.tier }).not.toEqual({ p, tier: 'opus' })
+  }
+  // A project, a repo, every module, the whole code, two code files: the same words still lift.
+  for (const p of ['przepisz cały projekt na TypeScript', 'refactor every module in the repo', 'Dodaj testy jednostkowe dla wszystkich funkcji w całym projekcie', 'add tests for all functions in a.ts and b.ts']) {
+    const v = heuristic(p, false)
+    expect({ p, tier: v?.tier, large: v?.why.includes('large scope') }).toEqual({ p, tier: 'opus', large: true })
+  }
+  // Depth and stakes lift on their own, as before; "call" is no "cały".
+  expect(heuristic('Streść cały raport', false)?.tier).toBe('sonnet')
+  expect(heuristic('Write a comprehensive SQL query for the sales report', false)?.why).toContain('large scope')
+  expect(heuristic('call the payments API from the checkout service', false)?.why ?? '').not.toContain('large scope')
 })
 
 test('tier helpers stop at the ends and respect enableFable', async () => {
