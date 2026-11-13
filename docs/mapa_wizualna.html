@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="pl" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-mods - mapa wizualna</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1b1f24;--card:#fff;--line:#d5d9df;--acc:#0b6bcb;--mut:#5b6572}
+:root[data-theme=dark]{--bg:#12161b;--fg:#e6e9ee;--card:#1b2129;--line:#323b46;--acc:#5aa9ff;--mut:#9aa6b4}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,Segoe UI,sans-serif}
+header{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
+h1{font-size:1.05rem;margin:0}
+button{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
+button:hover{border-color:var(--acc)}
+nav{display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px}
+nav button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+main{padding:0 16px 24px;max-width:1600px;margin:auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:10px 0;overflow:hidden}
+.bar{display:flex;gap:6px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--line);font-size:.85rem;color:var(--mut)}
+.view{overflow:auto;max-height:72vh;padding:10px;min-height:200px}
+.view svg{display:block;margin:auto}
+.desc{padding:10px 14px;color:var(--mut)}
+#panel{position:fixed;right:16px;bottom:16px;width:min(360px,calc(100vw - 32px));background:var(--card);border:1px solid var(--acc);border-radius:8px;padding:12px 14px;display:none;z-index:9;box-shadow:0 4px 16px #0004}
+#panel h3{margin:0 0 6px;font-size:1rem}
+#panel p{margin:0;font-size:.9rem}
+#panel .x{float:right}
+.err{color:#c0392b;padding:8px}
+pre{overflow:auto;background:var(--bg);padding:8px;border-radius:6px}
+.hint{font-size:.8rem;color:var(--mut);padding:0 16px}
+</style>
+</head>
+<body>
+<header><h1>claude-mods - mapa wizualna</h1><button id="theme">Motyw</button></header>
+<nav id="nav"></nav>
+<div class="hint">Stan: 2026-11-13, gałąź main. Dwa mody: model-router i find-mod. Kliknij węzeł na diagramie blokowym, aby zobaczyć opis. Przyciski +/- zmieniają powiększenie. Diagramy wymagają sieci (Mermaid z CDN); bez sieci widać kod źródłowy diagramu. Źródło diagramów: 02_ARCHITEKTURA_BLUEPRINT.md.</div>
+<main id="main"></main>
+<aside id="panel"><button class="x" id="px">x</button><h3 id="pt"></h3><p id="pd"></p></aside>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+var DATA = {"tabs": [{"id": "t1", "title": "1 Struktura", "desc": "Repo modów: marketplace i dwa mody ładowane przez silnik Claude Code. CI waliduje i testuje. Stan użytkownika model-routera leży w ~/.claude/model-router.", "diagrams": [["Kontekst", "flowchart LR\n  U[\"Użytkownik<br/>Claude Code terminal lub desktop\"]\n  subgraph REPO[\"Repo claude-mods, GitHub preisnerai\"]\n    MP[\".claude-plugin/marketplace.json<br/>katalog modów\"]\n    MR[\"model-router<br/>plugin.json, hooks, tests\"]\n    FM[\"find-mod<br/>plugin.json, hooks\"]\n  end\n  ENG[\"Silnik Claude Code<br/>moduły hooków, API claude-code\"]\n  CI[\"GitHub Actions<br/>test.yml\"]\n  GH[\"GitHub API<br/>search/repositories\"]\n  AN[\"API modeli<br/>Haiku jako sąd i kompaktor\"]\n  ST[(\"~/.claude/model-router<br/>history.jsonl, decisions.json, tee\")]\n  U -->|\"/plugin marketplace add, install\"| MP\n  MP --> MR\n  MP --> FM\n  MR -->|\"hooks.json -> register.tsx\"| ENG\n  FM -->|\"hooks.json -> register.tsx\"| ENG\n  ENG -->|\"zdarzenia sesji\"| MR\n  MR --> ST\n  MR -->|\"$.model.complete\"| AN\n  FM -->|\"$.http.fetch\"| GH\n  FM -->|\"$.model.complete\"| AN\n  CI -.->|\"validate i test\"| REPO\n"]]}, {"id": "t2", "title": "2 Cykl promptu", "desc": "Hooki model-routera w kolejności zdarzeń: routing lub crew, rachunek cache, kompresja wyjścia narzędzi, rozliczenie, kompakt, historia.", "diagrams": [["Cykl", "flowchart TD\n  P[\"prompt.submit<br/>prefiks !tier, !+ i !-, następne zdanie\"] --> C{\"mode\"}\n  C -->|\"route\"| R[\"klasyfikacja:<br/>reguły EN i PL, sąd Haiku lub laya-serve\"]\n  C -->|\"crew\"| W[\"orkiestrator zostaje na /model<br/>robotę mechaniczną przejmuje worker\"]\n  R --> M[\"rachunek cache:<br/>czy tańszy model się opłaca\"]\n  M --> TS[\"turn.start i turn.step<br/>zapytanie wychodzi na wybranym modelu i effort\"]\n  W --> TS\n  TS --> TC[\"agent.spawn i tool.call<br/>limit jednego workera na model, eskalacja przy porażkach\"]\n  TC --> SA[\"session.append door tool-result<br/>kompresja wyjścia Basha\"]\n  SA --> CO[\"turn.complete<br/>rozliczenie: koszt, baseline, oszczędność\"]\n  CO --> CP[\"session.compact<br/>auto-kompakt tanim modelem\"]\n  CO --> HS[\"session.end<br/>wiersz w history.jsonl\"]\n  PC[\"prompt.compose<br/>sekcje stylu i crew w prompcie systemowym\"] -.-> TS\n  UI[\"ui.render<br/>panel Model router, znacznik pod promptem\"] -.-> CO\n"]]}, {"id": "t3", "title": "3 Crew", "desc": "Orkiestrator zostaje na /model; zadania mechaniczne i trudniejsze przejmują workery z własnym ciepłym cache.", "diagrams": [["Sekwencja", "sequenceDiagram\n  participant O as Orkiestrator na /model\n  participant H as hook agent.spawn\n  participant WH as worker-haiku\n  participant WS as worker-sonnet i worker-opus\n  O->>H: Agent, zadanie mechaniczne z dużym wejściem\n  H->>H: sprawdzenie: jeden worker na model, cache ciepły\n  H-->>O: dopuszczone, worker startuje\n  O->>WH: zadanie, potem SendMessage na kolejne\n  WH-->>O: wynik\n  O->>WS: zadanie trudniejsze, gdy podpowiedź eskalacji\n  H-->>O: odmowa drugiego workera tego samego modelu, użyj SendMessage\n"]]}, {"id": "t4", "title": "4 find-mod", "desc": "Wyszukiwanie przez GitHub Search i ocenę Haiku; instalacja tylko z --yes.", "diagrams": [["Sekwencja", "sequenceDiagram\n  participant U as Użytkownik\n  participant F as find-mod register\n  participant S as search.ts\n  participant G as GitHub API\n  participant M as Haiku\n  U->>F: /find-mod opis\n  F->>S: findMod z opisem\n  S->>M: słowa kluczowe z opisu\n  S->>G: search/repositories wg tematów claude-mod, claude-code-mod, claude-code-plugin\n  G-->>S: kandydaci\n  S->>M: ocena dopasowania 0 do 2\n  S-->>U: najlepszy z największą liczbą gwiazdek i alternatywy\n  U->>F: /find-mod install owner/repo --yes\n  F->>F: bez --yes tylko podgląd marketplace.json\n  F->>F: claude plugin marketplace add, claude plugin install\n"]]}], "info": {"U": {"t": "Użytkownik", "d": "Claude Code w terminalu lub aplikacji desktop."}, "MP": {"t": "marketplace.json", "d": "Katalog modów: model-router i find-mod (.claude-plugin/marketplace.json)."}, "MR": {"t": "model-router 1.13.0", "d": "Routing modeli, rachunek cache, kompresja Basha, styl odpowiedzi; hooks/ i tests/."}, "FM": {"t": "find-mod 0.1.1", "d": "Wyszukiwarka modów GitHub: /find-mod, narzędzie search, install, star."}, "ENG": {"t": "Silnik Claude Code", "d": "Ładuje hooks/hooks.json -> register.tsx i wywołuje handlery zdarzeń."}, "CI": {"t": "GitHub Actions", "d": "test.yml: claude plugin validate i test dla repo i obu modów."}, "GH": {"t": "GitHub API", "d": "search/repositories wg tematów claude-mod, claude-code-mod, claude-code-plugin."}, "AN": {"t": "API modeli", "d": "Haiku jako sąd niejasnych promptów, kompaktor i ocena dopasowania."}, "ST": {"t": "Stan lokalny", "d": "history.jsonl, decisions.json, tee/ (ostatnie 200 skompresowanych wyników)."}, "P": {"t": "prompt.submit", "d": "Prefiksy !tier, !+, !-; wykrycie następnego zdania."}, "C": {"t": "Tryb", "d": "route (przełącza model) albo crew (orkiestrator zostaje)."}, "R": {"t": "Klasyfikacja", "d": "Reguły EN i PL (classify.ts), potem sąd Haiku lub laya-serve."}, "W": {"t": "Crew", "d": "worker-haiku, worker-sonnet, worker-opus (crew.ts)."}, "M": {"t": "Rachunek cache", "d": "cost.ts: czy zmiana modelu się opłaca po przebudowie cache."}, "TS": {"t": "turn.start i turn.step", "d": "Zapytanie wychodzi na wybranym modelu i effort."}, "TC": {"t": "agent.spawn i tool.call", "d": "Jeden worker na model; eskalacja po porażkach narzędzi."}, "SA": {"t": "session.append", "d": "Kompresja wyjścia Basha (compress.ts)."}, "CO": {"t": "turn.complete", "d": "Rozliczenie kosztu, baseline i oszczędności."}, "CP": {"t": "session.compact", "d": "Auto-kompakt tanim modelem powyżej progu kontekstu."}, "HS": {"t": "session.end", "d": "Wiersz w history.jsonl."}, "PC": {"t": "prompt.compose", "d": "Sekcje stylu (terse, adhd) i crew w prompcie systemowym."}, "UI": {"t": "ui.render", "d": "Panel Model router i znacznik pod promptem."}}};
+var root = document.documentElement;
+(function(){var th=null;try{th=localStorage.getItem('mods-theme');}catch(e){}
+ if(!th){th=(window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}
+ root.setAttribute('data-theme',th);})();
+function isDark(){return root.getAttribute('data-theme')==='dark';}
+var hasM = typeof mermaid !== 'undefined';
+function initM(){ if(hasM) mermaid.initialize({startOnLoad:false, securityLevel:'strict', theme:isDark()?'dark':'default', flowchart:{htmlLabels:true,useMaxWidth:false}, sequence:{useMaxWidth:false}, timeline:{useMaxWidth:false}}); }
+initM();
+var nav=document.getElementById('nav'), main=document.getElementById('main'), rendered={}, cnt=0;
+function el(t,c,x){var e=document.createElement(t); if(c)e.className=c; if(x!==undefined)e.textContent=x; return e;}
+DATA.tabs.forEach(function(t){
+  var b=el('button','',t.title); b.onclick=function(){show(t.id)}; b.id='b-'+t.id; nav.appendChild(b);
+  var sec=el('section'); sec.id='s-'+t.id; sec.style.display='none'; main.appendChild(sec);
+  sec.appendChild(el('h2','',t.title));
+  t.diagrams.forEach(function(d,j){
+    var card=el('div','card'); var bar=el('div','bar'); bar.appendChild(el('span','',d[0]+'  '));
+    var view=el('div','view'); view.id='v-'+t.id+'-'+j;
+    var z=1;
+    [['-',0.8],['+',1.25],['100%',0]].forEach(function(p){var bt=el('button','',p[0]); bt.onclick=function(){z=p[1]?z*p[1]:1; zoom(view,z)}; bar.appendChild(bt);});
+    card.appendChild(bar); card.appendChild(view); sec.appendChild(card);
+  });
+  sec.appendChild(el('div','desc',t.desc));
+});
+function zoom(view,z){var s=view.querySelector('svg'); if(!s)return; var w=parseFloat(s.dataset.w); s.style.width=(w*z)+'px'; s.style.maxWidth='none'; s.style.height='auto';}
+function show(id){
+  DATA.tabs.forEach(function(t){document.getElementById('s-'+t.id).style.display=t.id===id?'block':'none'; document.getElementById('b-'+t.id).className=t.id===id?'on':'';});
+  try{location.hash=id}catch(e){}
+  if(!rendered[id]){rendered[id]=1; renderTab(id);}
+}
+function renderTab(id){
+  var t=DATA.tabs.filter(function(x){return x.id===id})[0];
+  t.diagrams.forEach(function(d,j){
+    var view=document.getElementById('v-'+id+'-'+j);
+    if(!hasM){fallback(view,d[1],'Biblioteka Mermaid nie została załadowana (brak sieci). Poniżej kod źródłowy diagramu.');return;}
+    cnt++;
+    mermaid.render('m'+cnt, d[1]).then(function(r){
+      view.innerHTML=r.svg; var s=view.querySelector('svg'); if(!s)return;
+      var vb=s.viewBox&&s.viewBox.baseVal; var w=(vb&&vb.width)||s.getBoundingClientRect().width||800;
+      var w0=Math.min(w,Math.max(view.clientWidth-20,300));
+      s.style.maxWidth='none'; s.style.width=w0+'px'; s.style.height='auto'; s.dataset.w=w0;
+      hook(view);
+    }).catch(function(e){fallback(view,d[1],'Błąd składni diagramu: '+(e&&e.message||e));});
+  });
+}
+function fallback(view,src,msg){view.innerHTML='';view.appendChild(el('div','err',msg));view.appendChild(el('pre','',src));}
+function hook(view){
+  view.querySelectorAll('g.node').forEach(function(g){
+    var m=/^flowchart-(.+)-\d+$/.exec(g.id||''); if(!m)return; var k=m[1];
+    if(!DATA.info[k])return; g.style.cursor='pointer';
+    g.addEventListener('click',function(){info(k)});
+  });
+}
+function info(k){var i=DATA.info[k]; document.getElementById('pt').textContent=i.t; document.getElementById('pd').textContent=i.d; document.getElementById('panel').style.display='block';}
+document.getElementById('px').onclick=function(){document.getElementById('panel').style.display='none'};
+document.getElementById('theme').onclick=function(){
+  var n=isDark()?'light':'dark'; root.setAttribute('data-theme',n); try{localStorage.setItem('mods-theme',n)}catch(e){}
+  initM(); rendered={}; var cur=DATA.tabs.filter(function(t){return document.getElementById('s-'+t.id).style.display==='block'})[0]; if(cur){rendered[cur.id]=1; renderTab(cur.id);}
+};
+var h=(location.hash||'').slice(1); show(DATA.tabs.some(function(t){return t.id===h})?h:'t1');
+</script>
+</body>
+</html>
